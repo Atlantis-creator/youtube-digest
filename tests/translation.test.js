@@ -279,6 +279,81 @@ test("translated-only omits English while bilingual renders aligned English and 
   assert.match(bilingual, /\u4e2d\u6587\u8bd1\u6587/);
 });
 
+test("export follows the selected transcript language mode", () => {
+  const { buildTranscriptExportContent } = loadSidepanelHelpers();
+  const segments = [
+    { id: "segment-0-0", start: 0, text: "First English sentence." },
+    { id: "segment-1-5000", start: 5, text: "Second English sentence." },
+  ];
+  const translations = new Map([
+    ["segment-0-0", "\u7b2c\u4e00\u53e5\u4e2d\u6587\u3002"],
+    ["segment-1-5000", "\u7b2c\u4e8c\u53e5\u4e2d\u6587\u3002"],
+  ]);
+  const lookup = (segment) => translations.get(segment.id) || "";
+
+  assert.equal(
+    buildTranscriptExportContent(segments, "zh", lookup),
+    "[0:00] \u7b2c\u4e00\u53e5\u4e2d\u6587\u3002\n\n[0:05] \u7b2c\u4e8c\u53e5\u4e2d\u6587\u3002",
+  );
+  assert.equal(
+    buildTranscriptExportContent(segments, "bilingual", lookup),
+    "[0:00] First English sentence.\n\u7b2c\u4e00\u53e5\u4e2d\u6587\u3002\n\n" +
+      "[0:05] Second English sentence.\n\u7b2c\u4e8c\u53e5\u4e2d\u6587\u3002",
+  );
+});
+
+test("video subtitle payload keeps aligned source and Chinese text", () => {
+  const { buildVideoSubtitlePayload } = loadSidepanelHelpers();
+  const segments = [
+    { id: "segment-0-0", start: 0, text: "First English sentence." },
+    { id: "segment-1-5000", start: 5, text: "Second English sentence." },
+  ];
+  const translations = new Map([
+    ["segment-0-0", "\u7b2c\u4e00\u53e5\u4e2d\u6587\u3002"],
+    ["segment-1-5000", "\u7b2c\u4e8c\u53e5\u4e2d\u6587\u3002"],
+  ]);
+
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(
+        buildVideoSubtitlePayload(
+          segments,
+          "bilingual",
+          (segment) => translations.get(segment.id) || "",
+        ),
+      ),
+    ),
+    {
+      enabled: true,
+      mode: "bilingual",
+      segments: [
+        {
+          id: "segment-0-0",
+          start: 0,
+          end: 5,
+          original: "First English sentence.",
+          translated: "\u7b2c\u4e00\u53e5\u4e2d\u6587\u3002",
+        },
+        {
+          id: "segment-1-5000",
+          start: 5,
+          end: 13,
+          original: "Second English sentence.",
+          translated: "\u7b2c\u4e8c\u53e5\u4e2d\u6587\u3002",
+        },
+      ],
+    },
+  );
+});
+
+test("persisted transcript mode is restored safely", () => {
+  const { normalizeTranscriptMode } = loadSidepanelHelpers();
+  assert.equal(normalizeTranscriptMode("bilingual"), "bilingual");
+  assert.equal(normalizeTranscriptMode("zh"), "zh");
+  assert.equal(normalizeTranscriptMode("unexpected"), "original");
+  assert.equal(normalizeTranscriptMode(undefined), "original");
+});
+
 test("subtitle formatting tags render in original and translated segment text", () => {
   const { renderTranscriptSegmentContent } = loadSidepanelHelpers();
   const html = renderTranscriptSegmentContent(

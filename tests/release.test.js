@@ -20,6 +20,19 @@ test("manifest uses minimized install-time permissions", () => {
   assert.equal(manifest.version, "1.1.5");
 });
 
+test("side panel has no global fallback outside YouTube tabs", () => {
+  const manifest = JSON.parse(read("manifest.json"));
+  const background = read("background.js");
+
+  assert.equal(manifest.side_panel?.default_path, undefined);
+  assert.match(background, /function isYouTubeUrl\(/);
+  assert.match(
+    background,
+    /chrome\.action\.onClicked\.addListener\([\s\S]*?if \(!isYouTubeUrl\(tab\.url\)\) return;/,
+  );
+  assert.match(background, /chrome\.runtime\.onStartup\.addListener/);
+});
+
 test("release copy documents current scope without em dashes", () => {
   const readme = read("README.md");
   const chineseReadme = read("README.zh-CN.md");

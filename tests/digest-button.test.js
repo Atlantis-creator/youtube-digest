@@ -332,3 +332,27 @@ test("DOM mutation reconciliation repairs a replaced toolbar", () => {
   assert.equal(newRow.children.length, 1);
   assert.equal(newGroup.children.length, 1);
 });
+
+test("video subtitle timing selects only the currently active segment", () => {
+  const harness = createHarness();
+  const segments = [
+    { id: "first", start: 0, end: 5 },
+    { id: "second", start: 5, end: 13 },
+  ];
+
+  assert.equal(
+    harness.context.findActiveVideoSubtitleSegment(segments, 4.99).id,
+    "first",
+  );
+  assert.equal(
+    harness.context.findActiveVideoSubtitleSegment(segments, 5).id,
+    "second",
+  );
+  assert.equal(harness.context.findActiveVideoSubtitleSegment(segments, 13), null);
+});
+
+test("content script accepts synchronized video subtitle payloads", () => {
+  assert.match(contentScript, /message\.action === "setVideoSubtitles"/);
+  assert.match(contentScript, /youtube-digest-subtitle-overlay/);
+  assert.match(contentScript, /timeupdate/);
+});
