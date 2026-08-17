@@ -40,6 +40,10 @@ let transcriptScrollObserver = null;
 let transcriptParagraphCache = new Map();
 const TRANSLATION_MESSAGE_TIMEOUT_MS = 130_000;
 
+function normalizeTranscriptMode(mode) {
+  return ["original", "zh", "bilingual"].includes(mode) ? mode : "original";
+}
+
 /**
  * Prevent a stopped service worker or dead message channel from leaving the
  * transcript queue stuck forever. The underlying Chrome message cannot be
@@ -552,6 +556,7 @@ async function startDigest(videoId, videoUrl) {
     currentTranscriptText = cached.transcriptText;
     currentTranscriptTimestamped = cached.transcriptTimestamped;
     currentTranscriptLanguage = cached.transcriptLanguage || null;
+    currentTranscriptMode = normalizeTranscriptMode(cached.transcriptMode);
     isAnalysisLoading = false;
 
     // Restore semantic-segment translations from persistent storage.
@@ -560,6 +565,7 @@ async function startDigest(videoId, videoUrl) {
         transcriptParagraphCache.set(key, value);
       }
     }
+    setTranscriptModeButtons(currentTranscriptMode);
 
     if (currentVideoTitle || currentChannelName) {
       const videoInfo = document.getElementById("videoInfo");
@@ -867,14 +873,51 @@ function renderTranscript() {
 
   // Start tracking video playback for auto-scroll
   startPlaybackTracking();
+  syncVideoSubtitleOverlay();
 }
 
 function copyTranscript() {
-  copyToClipboardWithFeedback(currentTranscriptText || "", "copyTranscriptBtn");
+  const transcriptContent = getTranscriptContentForCurrentMode();
+  copyToClipboardWithFeedback(transcriptContent, "copyTranscriptBtn");
+}
+
+function formatTranscriptTimestamp(seconds) {
+  const safeSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+  const minutes = Math.floor(safeSeconds / 60);
+  return `${minutes}:${String(safeSeconds % 60).padStart(2, "0")}`;
+}
+
+function buildTranscriptExportContent(segments, mode, getTranslation) {
+  const safeMode = normalizeTranscriptMode(mode);
+  return (Array.isArray(segments) ? segments : [])
+    .map((segment) => {
+      const timestamp = `[${formatTranscriptTimestamp(segment?.start)}]`;
+      const original = normalizeCaptionText(segment?.text);
+      const translated = normalizeCaptionText(getTranslation?.(segment));
+      if (safeMode === "zh") {
+        return `${timestamp} ${translated || `[Translation unavailable] ${original}`}`;
+      }
+      if (safeMode === "bilingual") {
+        return `${timestamp} ${original}\n${translated || "[Translation unavailable]"}`;
+      }
+      return `${timestamp} ${original}`;
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function getTranscriptContentForCurrentMode() {
+  if (currentTranscriptMode === "original") return currentTranscriptText || "";
+  return buildTranscriptExportContent(
+    getActiveTranscriptSegments(),
+    currentTranscriptMode,
+    (segment) =>
+      transcriptParagraphCache.get(transcriptTranslationCacheKey(segment)) || "",
+  );
 }
 
 function exportTranscript() {
-  const transcriptContent = currentTranscriptText || "";
+  const transcriptContent = getTranscriptContentForCurrentMode();
   const videoUrl = `https://youtube.com/watch?v=${currentVideoId}`;
 
   let exportText = "";
@@ -1356,6 +1399,7 @@ async function saveToCache(videoId) {
       transcriptText: currentTranscriptText,
       transcriptTimestamped: currentTranscriptTimestamped,
       transcriptLanguage: currentTranscriptLanguage,
+      transcriptMode: currentTranscriptMode,
       videoTitle: currentVideoTitle,
       channelName: currentChannelName,
       paragraphCache: paragraphCacheForVideo,
@@ -1702,6 +1746,10 @@ function highlightActiveEntry(currentSeconds) {
 
   if (!activeEntry) return;
 
+  if (currentTranscriptMode !== "original" && activeTranslationQueue) {
+    activeTranslationQueue.enqueue(Number(activeEntry.dataset.segmentIndex));
+  }
+
   // Skip if this entry is already highlighted (no DOM thrashing)
   if (activeEntry.classList.contains("active-playback")) return;
 
@@ -1748,6 +1796,47 @@ function getActiveTranscriptSegments() {
   return groupTranscriptEntries(currentTranscript || []);
 }
 
+function buildVideoSubtitlePayload(segments, mode, getTranslation) {
+  const safeMode = normalizeTranscriptMode(mode);
+  const sourceSegments = Array.isArray(segments) ? segments : [];
+  return {
+    enabled: safeMode !== "original",
+    mode: safeMode,
+    segments: sourceSegments.map((segment, index) => {
+      const start = Math.max(0, Number(segment?.start) || 0);
+      const nextStart = Number(sourceSegments[index + 1]?.start);
+      const end = Number.isFinite(nextStart) && nextStart > start
+        ? nextStart
+        : start + 8;
+      return {
+        id: String(segment?.id || ""),
+        start,
+        end,
+        original: normalizeCaptionText(segment?.text),
+        translated: normalizeCaptionText(getTranslation?.(segment)),
+      };
+    }),
+  };
+}
+
+function syncVideoSubtitleOverlay() {
+  if (!Number.isInteger(youtubeTabId)) return Promise.resolve();
+  const segments = getActiveTranscriptSegments();
+  const subtitlePayload = buildVideoSubtitlePayload(
+    segments,
+    currentTranscriptMode,
+    (segment) =>
+      transcriptParagraphCache.get(transcriptTranslationCacheKey(segment)) || "",
+  );
+  return chrome.runtime
+    .sendMessage({
+      action: "relayToContent",
+      tabId: youtubeTabId,
+      payload: { action: "setVideoSubtitles", ...subtitlePayload },
+    })
+    .catch(() => {});
+}
+
 function transcriptTranslationCacheKey(segment) {
   return `${currentVideoId}:zh:semantic:${segment.id}`;
 }
@@ -1761,7 +1850,7 @@ function setTranscriptModeButtons(mode) {
 }
 
 async function handleTranscriptModeChange(mode) {
-  if (!["original", "zh", "bilingual"].includes(mode)) return;
+  if (normalizeTranscriptMode(mode) !== mode) return;
   if (mode === currentTranscriptMode) return;
 
   currentTranscriptMode = mode;
@@ -1771,6 +1860,7 @@ async function handleTranscriptModeChange(mode) {
   if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
   transcriptScrollObserver = null;
   setTranscriptModeButtons(mode);
+  await updateCache();
 
   if (mode === "original") {
     renderTranscript();
@@ -1955,6 +2045,7 @@ async function requestTranscriptTranslationBatch(
         generation,
       );
     });
+    await syncVideoSubtitleOverlay();
     await updateCache();
   } catch (error) {
     if (generation !== translationGeneration) return;
@@ -2003,6 +2094,7 @@ async function translateTranscript() {
   if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
 
   const rows = renderTranscriptModeRows(segments, mode);
+  syncVideoSubtitleOverlay();
   const queue = [];
   const queued = new Set();
   let processing = false;
@@ -2082,4 +2174,7 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   alignTranslatedSegmentBatch,
   renderSubtitleInlineMarkup,
   renderTranscriptSegmentContent,
+  normalizeTranscriptMode,
+  buildTranscriptExportContent,
+  buildVideoSubtitlePayload,
 };

@@ -229,27 +229,38 @@ async function readBoundedAiResponse(response, onActivity) {
 // SIDE PANEL SETUP
 // ============================================================
 
-/**
- * When the user clicks the extension icon, open the side panel.
- * Chrome's Side Panel API lets us show a persistent panel alongside the page.
- */
-chrome.action.onClicked.addListener((tab) => {
-  // Re-enable + open without awaiting — preserves user gesture context
-  chrome.sidePanel.setOptions({
-    tabId: tab.id,
-    path: "sidepanel.html",
-    enabled: true,
-  });
-  chrome.sidePanel.open({ tabId: tab.id });
-});
+function isYouTubeUrl(url) {
+  try {
+    return new URL(url).origin === "https://www.youtube.com";
+  } catch {
+    return false;
+  }
+}
+
+async function initializePanelOptions() {
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(
+    tabs
+      .filter((tab) => Number.isInteger(tab.id))
+      .map((tab) => updatePanelForTab(tab.id, tab.url || tab.pendingUrl || "")),
+  );
+}
 
 /**
- * Allow the side panel to open on any page, but it's designed for YouTube.
+ * Chrome opens the toolbar action only where updatePanelForTab has enabled a
+ * tab-specific panel. There is deliberately no global manifest fallback.
  */
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+chrome.sidePanel
+  .setPanelBehavior({ openPanelOnActionClick: true })
+  .catch(() => {});
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
+  initializePanelOptions().catch(() => {});
   if (reason === "install") chrome.runtime.openOptionsPage();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  initializePanelOptions().catch(() => {});
 });
 
 /**
@@ -268,9 +279,10 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
  * visible when switching to an already-loaded non-YouTube tab.
  */
 function updatePanelForTab(tabId, url) {
-  const isYouTube = (url || "").startsWith("https://www.youtube.com");
+  if (!Number.isInteger(tabId)) return Promise.resolve();
+  const isYouTube = isYouTubeUrl(url);
   // setOptions can reject if the tab just closed — ignore that harmlessly.
-  chrome.sidePanel
+  return chrome.sidePanel
     .setOptions({ tabId, path: "sidepanel.html", enabled: isYouTube })
     .catch(() => {});
 }
@@ -409,7 +421,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // IMPORTANT: we call setOptions + open synchronously (no await between them)
     // to preserve the user gesture context. Chrome requires sidePanel.open()
     // to be called within a user gesture — awaiting anything first can expire it.
-    if (tabId) {
+    if (tabId && isYouTubeUrl(sender.tab?.url)) {
       chrome.sidePanel.setOptions({
         tabId,
         path: "sidepanel.html",
@@ -433,7 +445,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.tabs
         .query({ active: true, lastFocusedWindow: true })
         .then((tabs) => {
-          if (tabs[0]) {
+          if (tabs[0] && isYouTubeUrl(tabs[0].url)) {
             chrome.sidePanel.setOptions({
               tabId: tabs[0].id,
               path: "sidepanel.html",
@@ -460,10 +472,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         // Query specifically for YouTube tabs to avoid side panel context issues
         // Try multiple query strategies to find the right tab
-        let tabs = await chrome.tabs.query({
-          active: true,
-          lastFocusedWindow: true,
-        });
+        let tabs = [];
+        if (Number.isInteger(message.tabId)) {
+          const requestedTab = await chrome.tabs.get(message.tabId);
+          if (isYouTubeUrl(requestedTab.url)) tabs = [requestedTab];
+        } else {
+          tabs = await chrome.tabs.query({
+            active: true,
+            lastFocusedWindow: true,
+          });
+        }
         debugLog(
           "[YouTube Digest BG] Active tab in last focused window:",
           tabs.length,
@@ -471,7 +489,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         );
 
         // If no YouTube tab found, try broader query
-        if (!tabs[0] || !tabs[0].url?.includes("youtube.com")) {
+        if (
+          (!tabs[0] || !isYouTubeUrl(tabs[0].url)) &&
+          !Number.isInteger(message.tabId)
+        ) {
           tabs = await chrome.tabs.query({
             url: "https://www.youtube.com/*",
             active: true,
@@ -480,7 +501,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
 
         // Still nothing? Try any YouTube tab
-        if (!tabs[0]) {
+        if (!tabs[0] && !Number.isInteger(message.tabId)) {
           tabs = await chrome.tabs.query({ url: "https://www.youtube.com/*" });
           debugLog("[YouTube Digest BG] Any YouTube tabs:", tabs.length);
         }

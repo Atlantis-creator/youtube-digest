@@ -89,11 +89,12 @@ function loadBackgroundHelpers({
       },
       action: { onClicked: listeners },
       sidePanel: {
-        setPanelBehavior() {},
+        setPanelBehavior: () => Promise.resolve(),
         setOptions: () => Promise.resolve(),
       },
       runtime: {
         onInstalled: listeners,
+        onStartup: listeners,
         onMessage: listeners,
         openOptionsPage() {},
         getURL: (resourcePath) => `chrome-extension://test/${resourcePath}`,

@@ -30,6 +30,8 @@ let ytdDigestButton = null;
 let digestButtonObserver = null;
 let digestButtonReconcileTimer = null;
 let digestButtonResizeListenerAdded = false;
+let videoSubtitleState = { enabled: false, mode: "original", segments: [] };
+let videoSubtitleVideo = null;
 
 // ============================================================
 // INITIALIZATION
@@ -138,6 +140,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  if (message.action === "setVideoSubtitles") {
+    setVideoSubtitles(message);
+    sendResponse({ success: true });
+    return false;
+  }
+
   if (message.action === "getCurrentTime") {
     // Return the current video playback time (used by auto-scroll)
     const video = document.querySelector("video.html5-main-video");
@@ -168,6 +176,177 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   sendResponse({ success: false, error: "Unknown action" });
   return false;
 });
+
+// ============================================================
+// VIDEO SUBTITLE OVERLAY
+// ============================================================
+
+function findActiveVideoSubtitleSegment(segments, currentTime) {
+  if (!Array.isArray(segments) || !Number.isFinite(Number(currentTime))) {
+    return null;
+  }
+
+  const time = Number(currentTime);
+  let low = 0;
+  let high = segments.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const segment = segments[middle];
+    const start = Number(segment?.start);
+    const end = Number(segment?.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+    if (time < start) high = middle - 1;
+    else if (time >= end) low = middle + 1;
+    else return segment;
+  }
+  return null;
+}
+
+function detachVideoSubtitleVideo() {
+  if (!videoSubtitleVideo) return;
+  videoSubtitleVideo.removeEventListener("timeupdate", renderVideoSubtitles);
+  videoSubtitleVideo.removeEventListener("seeking", renderVideoSubtitles);
+  videoSubtitleVideo = null;
+}
+
+function ensureVideoSubtitleOverlay() {
+  const player = document.querySelector(
+    "#movie_player.html5-video-player, #movie_player, .html5-video-player",
+  );
+  const video = document.querySelector("video.html5-main-video");
+  if (!player || !video) return null;
+
+  if (videoSubtitleVideo !== video) {
+    detachVideoSubtitleVideo();
+    videoSubtitleVideo = video;
+    video.addEventListener("timeupdate", renderVideoSubtitles);
+    video.addEventListener("seeking", renderVideoSubtitles);
+  }
+
+  let overlay = document.getElementById("youtube-digest-subtitle-overlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "youtube-digest-subtitle-overlay";
+    overlay.setAttribute("aria-live", "off");
+    overlay.title = "Drag to adjust subtitle height";
+    overlay.style.cssText = `
+      position: absolute;
+      left: 50%;
+      bottom: 12%;
+      transform: translateX(-50%);
+      z-index: 2147483646;
+      width: max-content;
+      max-width: 88%;
+      padding: 8px 14px;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.72);
+      color: #fff;
+      text-align: center;
+      font-family: "YouTube Noto", "Roboto", "Arial", sans-serif;
+      font-size: clamp(16px, 2.1vw, 28px);
+      line-height: 1.35;
+      text-shadow: 0 1px 2px #000;
+      pointer-events: auto;
+      cursor: grab;
+      user-select: none;
+      display: none;
+    `;
+
+    let dragStartY = 0;
+    let dragStartBottom = 12;
+    overlay.addEventListener("pointerdown", (event) => {
+      dragStartY = event.clientY;
+      dragStartBottom = parseFloat(overlay.style.bottom) || 12;
+      overlay.style.cursor = "grabbing";
+      overlay.setPointerCapture?.(event.pointerId);
+      event.stopPropagation();
+    });
+    overlay.addEventListener("pointermove", (event) => {
+      if (!overlay.hasPointerCapture?.(event.pointerId)) return;
+      const playerHeight = Math.max(1, player.getBoundingClientRect().height);
+      const deltaPercent = ((dragStartY - event.clientY) / playerHeight) * 100;
+      overlay.style.bottom = `${Math.min(80, Math.max(4, dragStartBottom + deltaPercent))}%`;
+      event.stopPropagation();
+    });
+    const finishDrag = (event) => {
+      if (overlay.hasPointerCapture?.(event.pointerId)) {
+        overlay.releasePointerCapture?.(event.pointerId);
+      }
+      overlay.style.cursor = "grab";
+      event.stopPropagation();
+    };
+    overlay.addEventListener("pointerup", finishDrag);
+    overlay.addEventListener("pointercancel", finishDrag);
+    player.appendChild(overlay);
+  }
+  return overlay;
+}
+
+function renderVideoSubtitles() {
+  const overlay = ensureVideoSubtitleOverlay();
+  if (!overlay) return;
+  if (!videoSubtitleState.enabled || !videoSubtitleVideo) {
+    overlay.style.display = "none";
+    overlay.textContent = "";
+    return;
+  }
+
+  const segment = findActiveVideoSubtitleSegment(
+    videoSubtitleState.segments,
+    videoSubtitleVideo.currentTime,
+  );
+  if (!segment || !segment.translated) {
+    overlay.style.display = "none";
+    overlay.textContent = "";
+    return;
+  }
+
+  overlay.textContent = "";
+  if (videoSubtitleState.mode === "bilingual" && segment.original) {
+    const original = document.createElement("div");
+    original.className = "youtube-digest-subtitle-original";
+    original.textContent = segment.original;
+    overlay.appendChild(original);
+  }
+  if (segment.translated) {
+    const translated = document.createElement("div");
+    translated.className = "youtube-digest-subtitle-translated";
+    translated.lang = "zh-CN";
+    translated.style.color = "#ffe6a7";
+    translated.textContent = segment.translated;
+    overlay.appendChild(translated);
+  }
+  overlay.style.display = overlay.children.length ? "block" : "none";
+}
+
+function setVideoSubtitles(payload) {
+  const mode = ["zh", "bilingual"].includes(payload?.mode)
+    ? payload.mode
+    : "original";
+  const segments = Array.isArray(payload?.segments)
+    ? payload.segments
+        .map((segment) => ({
+          id: String(segment?.id || ""),
+          start: Number(segment?.start),
+          end: Number(segment?.end),
+          original: String(segment?.original || ""),
+          translated: String(segment?.translated || ""),
+        }))
+        .filter(
+          (segment) =>
+            Number.isFinite(segment.start) &&
+            Number.isFinite(segment.end) &&
+            segment.end > segment.start,
+        )
+        .sort((a, b) => a.start - b.start)
+    : [];
+  videoSubtitleState = {
+    enabled: Boolean(payload?.enabled) && mode !== "original",
+    mode,
+    segments,
+  };
+  renderVideoSubtitles();
+}
 
 // ============================================================
 // DIGEST BUTTON INJECTION
@@ -805,6 +984,10 @@ function escapeHtmlForContent(text) {
  * we clean up old markers and re-inject the button.
  */
 document.addEventListener("yt-navigate-finish", () => {
+  videoSubtitleState = { enabled: false, mode: "original", segments: [] };
+  detachVideoSubtitleVideo();
+  document.getElementById("youtube-digest-subtitle-overlay")?.remove();
+
   // Clean up old key moment markers when navigating to a new video
   const existingMarkers = document.querySelectorAll(".ytd-key-moment-markers");
   existingMarkers.forEach((m) => m.remove());

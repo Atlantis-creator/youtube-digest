@@ -28,8 +28,9 @@ test("side panel has no global fallback outside YouTube tabs", () => {
   assert.match(background, /function isYouTubeUrl\(/);
   assert.match(
     background,
-    /chrome\.action\.onClicked\.addListener\([\s\S]*?if \(!isYouTubeUrl\(tab\.url\)\) return;/,
+    /setPanelBehavior\(\{ openPanelOnActionClick: true \}\)/,
   );
+  assert.match(background, /enabled: isYouTube/);
   assert.match(background, /chrome\.runtime\.onStartup\.addListener/);
 });
 
