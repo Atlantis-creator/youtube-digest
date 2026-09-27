@@ -139,6 +139,16 @@ class CommitTest(VaultCase):
         (self.root / 'staged.md').write_text('staged', encoding='utf-8')
         git(self.root, 'add', 'staged.md')
 
+    def test_reuses_existing_author_dir_regardless_of_case(self):
+        (self.root / '个人运转 Wiki' / SM / 'andrew huberman').mkdir()
+        result = host.handle(self.request())
+        self.assertTrue(result['commit']['ok'], result)
+        self.assertEqual(result['path'].split('/')[2], 'andrew huberman')
+        subject = git(self.root, 'log', '-1', '--format=%s').strip()
+        self.assertEqual(subject, '新增来源：andrew huberman/The Art of True Happiness  Dr. Brooks')
+        files = git(self.root, '-c', 'core.quotepath=false', 'show', '--name-only', '--format=').split('\n')
+        self.assertEqual([f for f in files if f], [result['path']])
+
     def test_commits_only_the_new_source(self):
         result = host.handle(self.request())
         self.assertTrue(result['commit']['ok'], result)

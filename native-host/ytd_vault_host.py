@@ -90,6 +90,20 @@ def source_key(source):
     return urlunsplit((parts.scheme.lower(), host, parts.path.rstrip('/'), urlencode(query), ''))
 
 
+def find_author_dir(source_material, author):
+    """Reuse an existing author folder that differs only in case.
+
+    Windows paths ignore case but git pathspecs do not, so writing into
+    `andrew huberman/` while committing `Andrew Huberman/...` fails; always
+    use the folder's real on-disk name.
+    """
+    wanted = author.casefold()
+    for child in source_material.iterdir():
+        if child.is_dir() and child.name.casefold() == wanted:
+            return child
+    return source_material / author
+
+
 SOURCE_LINE = re.compile(r'^source:\s*(.+?)\s*$', re.M)
 
 
@@ -193,15 +207,16 @@ def land(request):
     duplicate = find_duplicate(wiki_dir, source_key(source))
     if duplicate:
         return {'ok': False, 'error': '这个视频已经落盘过。', 'existing': duplicate.relative_to(root).as_posix()}
-    note = wiki_dir / SOURCE_MATERIAL / author / f'{file_title}.md'
+    author_dir = find_author_dir(wiki_dir / SOURCE_MATERIAL, author)
+    note = author_dir / f'{file_title}.md'
     if note.exists():
         return {'ok': False, 'error': '同名文件已存在。', 'existing': note.relative_to(root).as_posix()}
 
-    note.parent.mkdir(exist_ok=True)
+    author_dir.mkdir(exist_ok=True)
     with note.open('x', encoding='utf-8', newline='\n') as handle:
         handle.write(render_note(title=title, author=author, source=source, segments=segments))
     relative = note.relative_to(root).as_posix()
-    commit = commit_note(root, relative, f'新增来源：{author}/{file_title}')
+    commit = commit_note(root, relative, f'新增来源：{author_dir.name}/{file_title}')
     return {'ok': True, 'path': relative, 'commit': commit}
 
 
