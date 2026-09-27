@@ -104,7 +104,34 @@
             >双语</button>
           </div>
         </div>
+        <button class="enhance-btn" id="landToWikiBtn" type="button">
+          存到 Wiki
+        </button>
       </div>
+      <!-- Platform caption import: confirm target Wiki, author, title -->
+      <form class="wiki-landing" id="wikiLandingPanel" hidden>
+        <label class="wiki-landing-field">
+          <span>Wiki</span>
+          <select id="wikiLandingWiki" required></select>
+        </label>
+        <label class="wiki-landing-field">
+          <span>作者</span>
+          <input id="wikiLandingAuthor" type="text" required />
+        </label>
+        <label class="wiki-landing-field">
+          <span>标题</span>
+          <input id="wikiLandingTitle" type="text" required />
+        </label>
+        <div class="wiki-landing-actions">
+          <button class="enhance-btn active" id="wikiLandingConfirm" type="submit">
+            确认落盘
+          </button>
+          <button class="enhance-btn" id="wikiLandingCancel" type="button">
+            取消
+          </button>
+        </div>
+      </form>
+      <div class="wiki-landing-status" id="wikiLandingStatus" role="status" hidden></div>
 
       <!-- Tab navigation -->
       <div class="tabs" id="tabsNav" style="display: none">
@@ -165,35 +192,8 @@
                 <button class="enhance-btn" id="exportTranscriptBtn">
                   Export
                 </button>
-                <button class="enhance-btn" id="landToWikiBtn" type="button">
-                  存到 Wiki
-                </button>
               </div>
             </div>
-            <!-- Platform caption import: confirm target Wiki, author, title -->
-            <form class="wiki-landing" id="wikiLandingPanel" hidden>
-              <label class="wiki-landing-field">
-                <span>Wiki</span>
-                <select id="wikiLandingWiki" required></select>
-              </label>
-              <label class="wiki-landing-field">
-                <span>作者</span>
-                <input id="wikiLandingAuthor" type="text" required />
-              </label>
-              <label class="wiki-landing-field">
-                <span>标题</span>
-                <input id="wikiLandingTitle" type="text" required />
-              </label>
-              <div class="wiki-landing-actions">
-                <button class="enhance-btn active" id="wikiLandingConfirm" type="submit">
-                  确认落盘
-                </button>
-                <button class="enhance-btn" id="wikiLandingCancel" type="button">
-                  取消
-                </button>
-              </div>
-            </form>
-            <div class="wiki-landing-status" id="wikiLandingStatus" role="status" hidden></div>
             <div id="transcriptList"></div>
           </div>
         </div>
