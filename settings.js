@@ -12,6 +12,8 @@ var YTD_SETTINGS = (() => {
     aiBaseUrl: "https://api.deepseek.com",
     aiModel: "deepseek-v4-flash",
     supadataApiKey: "",
+    // Empty means: use the vault the local landing host was installed with.
+    obsidianVaultRoot: "",
   });
 
   function isLegacyCustom(input) {
@@ -31,6 +33,10 @@ var YTD_SETTINGS = (() => {
       supadataApiKey:
         typeof input.supadataApiKey === "string"
           ? input.supadataApiKey.trim()
+          : "",
+      obsidianVaultRoot:
+        typeof input.obsidianVaultRoot === "string"
+          ? input.obsidianVaultRoot.trim()
           : "",
     };
   }

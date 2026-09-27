@@ -1,0 +1,5 @@
+# Generated per machine by install.ps1
+ytd_vault_host.bat
+com.youtube_digest.vault.json
+config.json
+__pycache__/

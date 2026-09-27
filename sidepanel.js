@@ -427,6 +427,15 @@ function setupEventListeners() {
   document
     .getElementById("exportTranscriptBtn")
     ?.addEventListener("click", exportTranscript);
+  document
+    .getElementById("landToWikiBtn")
+    ?.addEventListener("click", openWikiLanding);
+  document
+    .getElementById("wikiLandingCancel")
+    ?.addEventListener("click", closeWikiLanding);
+  document
+    .getElementById("wikiLandingPanel")
+    ?.addEventListener("submit", submitWikiLanding);
   document.querySelectorAll("[data-transcript-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       handleTranscriptModeChange(button.dataset.transcriptMode);
@@ -568,6 +577,8 @@ async function startDigest(videoId, videoUrl) {
     // The video page resets its subtitles to visible for every new video.
     videoSubtitlesVisible = true;
     setVideoSubtitleModeButtons();
+    closeWikiLanding();
+    setWikiLandingStatus("");
     translationGeneration += 1;
     if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
     transcriptScrollObserver = null;
@@ -944,6 +955,120 @@ function getTranscriptContentForCurrentMode() {
     (segment) =>
       transcriptParagraphCache.get(transcriptTranslationCacheKey(segment)) || "",
   );
+}
+
+// ============================================================
+// SAVE TO WIKI — platform caption import into an Obsidian Wiki
+// ============================================================
+// The panel only confirms Wiki, author and title; the local landing host
+// (native-host/) owns paths, duplicate checks, the file format and the commit.
+
+const LAST_LANDING_WIKI_KEY = "lastLandingWiki";
+
+function buildWikiLandingRequest({ wiki, author, title, videoId, segments }) {
+  return {
+    action: "land",
+    wiki: String(wiki || ""),
+    author: String(author || "").trim(),
+    title: String(title || "").trim(),
+    source: `https://www.youtube.com/watch?v=${encodeURIComponent(videoId || "")}`,
+    segments: (Array.isArray(segments) ? segments : [])
+      .map((segment) => ({
+        start: Math.max(0, Math.floor(Number(segment?.start) || 0)),
+        text: normalizeCaptionText(segment?.text),
+      }))
+      .filter((segment) => segment.text),
+  };
+}
+
+function describeWikiLandingResult(result) {
+  if (!result?.ok) {
+    const existing = result?.existing ? `（已存在：${result.existing}）` : "";
+    return { error: true, text: `未落盘：${result?.error || "未知错误"}${existing}` };
+  }
+  const commit = result.commit?.ok
+    ? `；已提交 ${result.commit.hash || ""}`.trimEnd()
+    : `；提交失败：${result.commit?.error || "未知原因"}`;
+  return { error: !result.commit?.ok, text: `已落盘：${result.path}${commit}` };
+}
+
+function setWikiLandingStatus(text, isError = false) {
+  const status = document.getElementById("wikiLandingStatus");
+  if (!status) return;
+  status.textContent = text;
+  status.hidden = !text;
+  status.classList.toggle("error", isError);
+}
+
+function closeWikiLanding() {
+  const panel = document.getElementById("wikiLandingPanel");
+  if (panel) panel.hidden = true;
+}
+
+async function openWikiLanding() {
+  if (!currentVideoId || !currentTranscript?.length) return;
+  const panel = document.getElementById("wikiLandingPanel");
+  const select = document.getElementById("wikiLandingWiki");
+  document.getElementById("wikiLandingAuthor").value = currentChannelName;
+  document.getElementById("wikiLandingTitle").value = currentVideoTitle;
+  select.innerHTML = "";
+  panel.hidden = true;
+  setWikiLandingStatus("正在读取 Wiki 列表…");
+
+  const [result, stored] = await Promise.all([
+    chrome.runtime
+      .sendMessage({ action: "vaultHost", request: { action: "listWikis" } })
+      .catch((error) => ({ ok: false, error: error.message })),
+    chrome.storage.local.get(LAST_LANDING_WIKI_KEY).catch(() => ({})),
+  ]);
+  if (!result?.ok) {
+    setWikiLandingStatus(`无法读取 Wiki：${result?.error || "未知错误"}`, true);
+    return;
+  }
+  if (!result.wikis.length) {
+    setWikiLandingStatus("vault 中没有含 2 - Source Material 的 Wiki。", true);
+    return;
+  }
+  result.wikis.forEach((wiki) => {
+    const option = document.createElement("option");
+    option.value = wiki;
+    option.textContent = wiki;
+    select.appendChild(option);
+  });
+  if (result.wikis.includes(stored?.[LAST_LANDING_WIKI_KEY])) {
+    select.value = stored[LAST_LANDING_WIKI_KEY];
+  }
+  setWikiLandingStatus("");
+  panel.hidden = false;
+}
+
+async function submitWikiLanding(event) {
+  event.preventDefault();
+  const confirmButton = document.getElementById("wikiLandingConfirm");
+  const request = buildWikiLandingRequest({
+    wiki: document.getElementById("wikiLandingWiki").value,
+    author: document.getElementById("wikiLandingAuthor").value,
+    title: document.getElementById("wikiLandingTitle").value,
+    videoId: currentVideoId,
+    segments: getActiveTranscriptSegments(),
+  });
+  confirmButton.disabled = true;
+  setWikiLandingStatus("正在落盘…");
+  try {
+    const result = await chrome.runtime
+      .sendMessage({ action: "vaultHost", request })
+      .catch((error) => ({ ok: false, error: error.message }));
+    const described = describeWikiLandingResult(result);
+    setWikiLandingStatus(described.text, described.error);
+    if (result?.ok) {
+      closeWikiLanding();
+      chrome.storage.local
+        .set({ [LAST_LANDING_WIKI_KEY]: request.wiki })
+        .catch(() => {});
+    }
+  } finally {
+    confirmButton.disabled = false;
+  }
 }
 
 function exportTranscript() {
@@ -2273,6 +2398,8 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   renderTranscriptSegmentContent,
   normalizeTranscriptMode,
   needsTranscriptTranslation,
+  buildWikiLandingRequest,
+  describeWikiLandingResult,
   buildTranscriptExportContent,
   buildVideoSubtitlePayload,
 };
