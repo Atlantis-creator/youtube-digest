@@ -26,6 +26,7 @@ function harness() {
       setAttribute(k, v) {
         this[k] = v;
       },
+      setPointerCapture() {},
       appendChild(child) {
         this.children.push(child);
         child.removed = false;
@@ -77,6 +78,9 @@ function harness() {
     },
   };
   const window = {
+    innerWidth: 1280,
+    addEventListener(k, fn) { events[k] = fn; },
+    dispatchEvent(event) { events[event.type]?.(event); },
     location: {
       href: "https://www.youtube.com/watch?v=videoAAAAAA",
       pathname: "/watch",
@@ -85,6 +89,7 @@ function harness() {
   const context = vm.createContext({
     console,
     URL,
+    Event,
     document,
     window,
     setTimeout() {},
@@ -207,4 +212,53 @@ test("hidden panel continues receiving playback updates even with subtitles off"
   assert.equal(h.sent.at(-1).action, "digestPlayback");
   assert.equal(h.sent.at(-1).currentTime, 15.25);
   assert.equal(h.sent.at(-1).videoId, "videoAAAAAA");
+});
+
+test("resizing preserves the iframe and clamps width to leave room for the page", async () => {
+  const h = harness();
+  await h.context.openDigestPanel();
+  const panel = h.document.getElementById("youtube-digest-panel");
+  const handle = h.document.getElementById("youtube-digest-panel-resize");
+  handle.listeners.pointerdown({button:0, pointerId:1, preventDefault() {}});
+  handle.listeners.pointermove({clientX:700});
+  assert.equal(panel.style.width, "580px");
+  assert.equal(panel.style.pointerEvents, "none");
+  handle.listeners.pointerup();
+  assert.equal(panel.style.pointerEvents, "auto");
+  assert.equal(h.sent.at(-1).action, "savePanelWidth");
+  assert.equal(h.sent.at(-1).width, 580);
+  h.context.setDigestPanelWidth(9999);
+  assert.equal(panel.style.width, "800px");
+  h.context.setDigestPanelWidth(1);
+  assert.equal(panel.style.width, "280px");
+  assert.equal(h.document.getElementById("youtube-digest-panel"), panel);
+});
+
+test("resize handle supports keyboard and disappears with hidden/fullscreen panel", async () => {
+  const h = harness();
+  await h.context.openDigestPanel();
+  const panel = h.document.getElementById("youtube-digest-panel");
+  const handle = h.document.getElementById("youtube-digest-panel-resize");
+  handle.listeners.keydown({key:"ArrowLeft", preventDefault() {}});
+  assert.equal(panel.style.width, "424px");
+  assert.equal(handle['aria-valuenow'], '424');
+  h.document.fullscreenElement = h.player;
+  h.events.fullscreenchange();
+  assert.equal(handle.style.display, 'none');
+  assert.equal(h.document.getElementById('youtube-digest-layout').textContent, '');
+  await h.document.exitFullscreen();
+  assert.equal(handle.style.display, 'block');
+  assert.equal(panel.style.width, "424px");
+});
+
+test("narrow windows constrain the dock without destroying the preferred width", async () => {
+  const h = harness();
+  await h.context.openDigestPanel();
+  h.context.setDigestPanelWidth(600);
+  h.window.innerWidth = 600;
+  h.events.resize();
+  assert.equal(h.document.getElementById('youtube-digest-panel').style.width, '300px');
+  h.window.innerWidth = 1280;
+  h.events.resize();
+  assert.equal(h.document.getElementById('youtube-digest-panel').style.width, '600px');
 });

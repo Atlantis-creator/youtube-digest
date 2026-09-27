@@ -258,6 +258,20 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
  * This is like a switchboard — different "actions" trigger different handlers.
  */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "loadPanelWidth") {
+    chrome.storage.local.get("ytd_panel_width")
+      .then((stored) => sendResponse({ width: stored.ytd_panel_width }), () => sendResponse({}));
+    return true;
+  }
+  if (message.action === "savePanelWidth") {
+    if (!Number.isFinite(message.width) || message.width < 1 || message.width > 800) {
+      sendResponse({ success: false });
+      return false;
+    }
+    chrome.storage.local.set({ ytd_panel_width: Math.round(message.width) })
+      .then(() => sendResponse({ success: true }), () => sendResponse({ success: false }));
+    return true;
+  }
   // We need to return true to indicate we'll respond asynchronously
   if (message.action === "fetchTranscript") {
     handleFetchTranscript(message.videoId)

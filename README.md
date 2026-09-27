@@ -100,6 +100,8 @@ Original subtitles appear on the video by default after the transcript loads. Us
 
 Use **隐藏侧栏** to collapse the panel while keeping subtitles, translation, and your reading position. Use **展开侧栏** on the player to restore it. Fullscreen temporarily hides the panel; leaving fullscreen restores it only if it was visible before. Expanding the panel from fullscreen exits fullscreen first.
 
+The page and player shrink to make room for the panel. Drag its left edge to resize it; the width is remembered when released. The focused edge also supports the left/right arrow keys. Narrow windows limit the panel width to keep room for the video.
+
 ## What works today
 
 - Google Chrome 116 or newer.

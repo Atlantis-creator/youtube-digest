@@ -39,6 +39,73 @@ let subtitleSessionVideoId = new URL(window.location.href).searchParams.get(
 let digestPanel = null;
 let digestPanelHidden = false;
 let lastPlaybackNotification = -1;
+let digestPanelWidth = 400;
+let digestPanelWidthRevision = 0;
+let digestPanelResizeHandle = null;
+let digestPanelDragging = false;
+let digestPanelLayoutKey = "";
+
+function getDigestPanelWidthLimits() {
+  const viewport = window.innerWidth;
+  const max = Math.max(1, Math.min(800, viewport - Math.min(480, viewport / 2)));
+  return { min: Math.min(280, max), max };
+}
+
+function getDigestPanelWidth() {
+  const { min, max } = getDigestPanelWidthLimits();
+  return Math.round(Math.max(min, Math.min(max, digestPanelWidth)));
+}
+
+function setDigestPanelWidth(width, persist = false) {
+  if (!Number.isFinite(width)) return;
+  digestPanelWidthRevision += 1;
+  const { min, max } = getDigestPanelWidthLimits();
+  digestPanelWidth = Math.round(Math.max(min, Math.min(max, width)));
+  updateDigestPanelVisibility();
+  if (persist) {
+    chrome.runtime.sendMessage({ action: "savePanelWidth", width: digestPanelWidth }).catch(() => {});
+  }
+}
+
+function createDigestPanelResizeHandle() {
+  const handle = document.createElement("div");
+  handle.id = "youtube-digest-panel-resize";
+  handle.tabIndex = 0;
+  handle.setAttribute("role", "separator");
+  handle.setAttribute("aria-orientation", "vertical");
+  handle.setAttribute("aria-label", "调整侧栏宽度");
+  handle.title = "左右拖动调整侧栏宽度；也可用左右方向键";
+  handle.style.cssText = "position:fixed;top:0;height:100vh;width:8px;z-index:2147483647;cursor:col-resize;touch-action:none;background:linear-gradient(to right,transparent 3px,#c8674f 3px,#c8674f 5px,transparent 5px);";
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    digestPanelDragging = true;
+    handle.setPointerCapture(event.pointerId);
+    updateDigestPanelVisibility();
+  });
+  handle.addEventListener("pointermove", (event) => {
+    if (!digestPanelDragging) return;
+    setDigestPanelWidth(window.innerWidth - event.clientX);
+  });
+  const finish = () => {
+    if (!digestPanelDragging) return;
+    digestPanelDragging = false;
+    setDigestPanelWidth(digestPanelWidth, true);
+  };
+  handle.addEventListener("pointerup", finish);
+  handle.addEventListener("pointercancel", finish);
+  handle.addEventListener("lostpointercapture", finish);
+  handle.addEventListener("keydown", (event) => {
+    const { min, max } = getDigestPanelWidthLimits();
+    const width = getDigestPanelWidth();
+    const target = { ArrowLeft: width + 24, ArrowRight: width - 24, Home: min, End: max }[event.key];
+    if (target === undefined) return;
+    event.preventDefault();
+    setDigestPanelWidth(target, true);
+  });
+  document.body.appendChild(handle);
+  return handle;
+}
 
 // Keep the iframe mounted when hidden: its translation queue and reading
 // position belong to this YouTube tab, including while the player is fullscreen.
@@ -48,21 +115,53 @@ function updateDigestPanelVisibility() {
     !digestPanelHidden &&
     !document.fullscreenElement &&
     window.location.pathname === "/watch";
+  const width = getDigestPanelWidth();
+  const available = window.innerWidth - width;
+  digestPanel.style.width = `${width}px`;
   digestPanel.style.visibility = visible ? "visible" : "hidden";
-  digestPanel.style.pointerEvents = visible ? "auto" : "none";
+  digestPanel.style.pointerEvents = visible && !digestPanelDragging ? "auto" : "none";
   digestPanel.setAttribute("aria-hidden", String(!visible));
+  if (digestPanelResizeHandle) {
+    const { min, max } = getDigestPanelWidthLimits();
+    digestPanelResizeHandle.style.right = `${width - 4}px`;
+    digestPanelResizeHandle.style.display = visible ? "block" : "none";
+    digestPanelResizeHandle.setAttribute("aria-valuemin", String(min));
+    digestPanelResizeHandle.setAttribute("aria-valuemax", String(max));
+    digestPanelResizeHandle.setAttribute("aria-valuenow", String(width));
+  }
   let layout = document.getElementById("youtube-digest-layout");
   if (!layout) {
     layout = document.createElement("style");
     layout.id = "youtube-digest-layout";
     document.body.appendChild(layout);
   }
-  // Removing our rule restores YouTube's own layout without overwriting its
-  // inline styles. Border-box keeps the reserved space inside the viewport.
+  // Padding alone does not constrain fixed headers or viewport-sized children.
+  // Dock the entire page and its fixed header, then constrain the player internals
+  // while YouTube catches up with the new available width. Never crop the video.
   layout.textContent = visible
-    ? "ytd-app { box-sizing: border-box !important; padding-right: min(400px, 90vw) !important; }"
+    ? `
+      ytd-app { box-sizing:border-box !important; width:calc(100% - ${width}px) !important; min-width:0 !important; padding-right:0 !important; }
+      ytd-app #masthead-container { width:calc(100% - ${width}px) !important; right:${width}px !important; }
+      ytd-watch-flexy { min-width:0 !important; --ytd-watch-flexy-min-player-width:0px; }
+      ytd-watch-flexy #full-bleed-container, ytd-watch-flexy #player-full-bleed-container, ytd-watch-flexy #player-container-outer, ytd-watch-flexy #movie_player { max-width:100% !important; }
+      ytd-watch-flexy #movie_player .html5-video-container { width:100% !important; height:100% !important; }
+      ytd-watch-flexy #movie_player video.html5-main-video { width:100% !important; height:100% !important; left:0 !important; top:0 !important; object-fit:contain !important; }
+      ytd-watch-flexy #movie_player .ytp-chrome-bottom { width:calc(100% - 24px) !important; left:12px !important; }
+      ${available < 1000 ? `
+        ytd-watch-flexy #columns { flex-direction:column !important; min-width:0 !important; }
+        ytd-watch-flexy #primary { box-sizing:border-box !important; width:calc(100% - 32px) !important; max-width:calc(100% - 32px) !important; min-width:0 !important; margin-left:16px !important; margin-right:16px !important; padding-right:0 !important; }
+        ytd-watch-flexy #secondary { box-sizing:border-box !important; width:calc(100% - 32px) !important; min-width:0 !important; margin-left:16px !important; margin-right:16px !important; padding-left:0 !important; }
+      ` : ""}
+    `
     : "";
   updateDigestPlayerControls();
+  const layoutKey = `${visible}:${width}:${window.innerWidth}`;
+  if (layoutKey !== digestPanelLayoutKey) {
+    digestPanelLayoutKey = layoutKey;
+    // Notify YouTube's own layout handlers as well as applying constraints.
+    // Assigning the key first prevents our resize listener from recursing.
+    window.dispatchEvent(new Event("resize"));
+  }
 }
 
 async function openDigestPanel() {
@@ -76,6 +175,14 @@ async function openDigestPanel() {
     digestPanel.style.cssText =
       "position:fixed;top:0;right:0;width:min(400px,90vw);height:100vh;border:0;z-index:2147483647;background:#fff;box-shadow:-3px 0 16px #0003;";
     document.body.appendChild(digestPanel);
+    digestPanelResizeHandle = createDigestPanelResizeHandle();
+    const widthRevision = digestPanelWidthRevision;
+    chrome.runtime.sendMessage({ action: "loadPanelWidth" }).then((result) => {
+      if (widthRevision === digestPanelWidthRevision && !digestPanelDragging && Number.isFinite(result?.width)) {
+        digestPanelWidth = result.width;
+        updateDigestPanelVisibility();
+      }
+    }).catch(() => {});
   }
   digestPanelHidden = false;
   updateDigestPanelVisibility();
@@ -146,6 +253,7 @@ function updateDigestPlayerControls() {
 }
 
 document.addEventListener("fullscreenchange", updateDigestPanelVisibility);
+window.addEventListener("resize", updateDigestPanelVisibility);
 
 function notifyDigestPlayback() {
   if (!digestPanel || !videoSubtitleVideo) return;
