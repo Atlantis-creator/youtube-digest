@@ -20,18 +20,16 @@ test("manifest uses minimized install-time permissions", () => {
   assert.equal(manifest.version, "1.1.5");
 });
 
-test("side panel has no global fallback outside YouTube tabs", () => {
+test("embedded panel is exposed only to YouTube and uses no native sidePanel", () => {
   const manifest = JSON.parse(read("manifest.json"));
-  const background = read("background.js");
-
-  assert.equal(manifest.side_panel?.default_path, undefined);
-  assert.match(background, /function isYouTubeUrl\(/);
-  assert.match(
-    background,
-    /setPanelBehavior\(\{ openPanelOnActionClick: true \}\)/,
-  );
-  assert.match(background, /enabled: isYouTube/);
-  assert.match(background, /chrome\.runtime\.onStartup\.addListener/);
+  assert.ok(!manifest.permissions.includes("sidePanel"));
+  assert.deepEqual(manifest.web_accessible_resources, [
+    {
+      resources: ["sidepanel.html"],
+      matches: ["https://www.youtube.com/*"],
+    },
+  ]);
+  assert.doesNotMatch(read("background.js"), /chrome\.sidePanel/);
 });
 
 test("release copy documents current scope without em dashes", () => {

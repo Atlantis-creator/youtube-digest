@@ -32,6 +32,135 @@ let digestButtonReconcileTimer = null;
 let digestButtonResizeListenerAdded = false;
 let videoSubtitleState = { enabled: false, mode: "original", segments: [] };
 let videoSubtitleVideo = null;
+let subtitlesVisible = true;
+let subtitleSessionVideoId = new URL(window.location.href).searchParams.get(
+  "v",
+);
+let digestPanel = null;
+let digestPanelHidden = false;
+let lastPlaybackNotification = -1;
+
+// Keep the iframe mounted when hidden: its translation queue and reading
+// position belong to this YouTube tab, including while the player is fullscreen.
+function updateDigestPanelVisibility() {
+  if (!digestPanel) return;
+  const visible =
+    !digestPanelHidden &&
+    !document.fullscreenElement &&
+    window.location.pathname === "/watch";
+  digestPanel.style.visibility = visible ? "visible" : "hidden";
+  digestPanel.style.pointerEvents = visible ? "auto" : "none";
+  digestPanel.setAttribute("aria-hidden", String(!visible));
+  let layout = document.getElementById("youtube-digest-layout");
+  if (!layout) {
+    layout = document.createElement("style");
+    layout.id = "youtube-digest-layout";
+    document.body.appendChild(layout);
+  }
+  // Removing our rule restores YouTube's own layout without overwriting its
+  // inline styles. Border-box keeps the reserved space inside the viewport.
+  layout.textContent = visible
+    ? "ytd-app { box-sizing: border-box !important; padding-right: min(400px, 90vw) !important; }"
+    : "";
+  updateDigestPlayerControls();
+}
+
+async function openDigestPanel() {
+  if (document.fullscreenElement) await document.exitFullscreen();
+  if (!digestPanel) {
+    digestPanel = document.createElement("iframe");
+    digestPanel.id = "youtube-digest-panel";
+    digestPanel.title = "YouTube Digest";
+    digestPanel.allow = "clipboard-write";
+    digestPanel.src = chrome.runtime.getURL("sidepanel.html");
+    digestPanel.style.cssText =
+      "position:fixed;top:0;right:0;width:min(400px,90vw);height:100vh;border:0;z-index:2147483647;background:#fff;box-shadow:-3px 0 16px #0003;";
+    document.body.appendChild(digestPanel);
+  }
+  digestPanelHidden = false;
+  updateDigestPanelVisibility();
+}
+
+function togglePlayerSubtitles() {
+  subtitlesVisible = !subtitlesVisible;
+  renderVideoSubtitles();
+  updateDigestPlayerControls();
+  chrome.runtime
+    .sendMessage({
+      action: "subtitleVisibilityChanged",
+      videoId: subtitleSessionVideoId,
+      visible: subtitlesVisible,
+    })
+    .catch(() => {});
+}
+
+function updateDigestPlayerControls() {
+  const player = document.querySelector("#movie_player");
+  if (!player || (!digestPanel && !videoSubtitleState.segments.length)) return;
+  let controls = document.getElementById("youtube-digest-controls");
+  if (!controls) {
+    controls = document.createElement("div");
+    controls.id = "youtube-digest-controls";
+    controls.style.cssText =
+      "position:absolute;right:12px;top:12px;z-index:2147483646;display:flex;gap:6px;";
+    for (const [id, handler] of [
+      [
+        "youtube-digest-panel-toggle",
+        () => {
+          if (
+            digestPanel &&
+            !digestPanelHidden &&
+            !document.fullscreenElement
+          ) {
+            digestPanelHidden = true;
+            updateDigestPanelVisibility();
+          } else openDigestPanel().catch(console.error);
+        },
+      ],
+      ["youtube-digest-subtitle-toggle", togglePlayerSubtitles],
+    ]) {
+      const button = document.createElement("button");
+      button.id = id;
+      button.type = "button";
+      button.style.cssText =
+        "border:1px solid #ffffff66;border-radius:6px;padding:7px 10px;background:#151515d9;color:white;font:13px Arial;cursor:pointer;";
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        handler();
+      });
+      controls.appendChild(button);
+    }
+    player.appendChild(controls);
+  }
+  const panelButton = document.getElementById("youtube-digest-panel-toggle");
+  panelButton.textContent = document.fullscreenElement
+    ? "展开侧栏（退出全屏）"
+    : digestPanelHidden || !digestPanel
+      ? "展开侧栏"
+      : "隐藏侧栏";
+  const subtitleButton = document.getElementById(
+    "youtube-digest-subtitle-toggle",
+  );
+  subtitleButton.textContent = subtitlesVisible ? "关闭字幕" : "显示字幕";
+  subtitleButton.setAttribute("aria-pressed", String(subtitlesVisible));
+}
+
+document.addEventListener("fullscreenchange", updateDigestPanelVisibility);
+
+function notifyDigestPlayback() {
+  if (!digestPanel || !videoSubtitleVideo) return;
+  const currentTime = videoSubtitleVideo.currentTime;
+  const bucket = Math.floor(currentTime * 4);
+  if (bucket === lastPlaybackNotification) return;
+  lastPlaybackNotification = bucket;
+  chrome.runtime
+    .sendMessage({
+      action: "digestPlayback",
+      videoId: subtitleSessionVideoId,
+      currentTime,
+    })
+    .catch(() => {});
+}
 
 // ============================================================
 // INITIALIZATION
@@ -124,7 +253,29 @@ if (document.readyState === "loading") {
  * When they send key moments, we highlight them on the progress bar.
  */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  debugLog("[YouTube Digest Content] Received message:", message.action, message);
+  debugLog(
+    "[YouTube Digest Content] Received message:",
+    message.action,
+    message,
+  );
+  if (message.action === "openDigestPanel") {
+    openDigestPanel().then(
+      () => sendResponse({ success: true }),
+      (error) => sendResponse({ error: error.message }),
+    );
+    return true;
+  }
+  if (message.action === "hideDigestPanel") {
+    digestPanelHidden = true;
+    updateDigestPanelVisibility();
+    sendResponse({ success: true });
+    return false;
+  }
+  if (message.action === "togglePlayerSubtitles") {
+    togglePlayerSubtitles();
+    sendResponse({ visible: subtitlesVisible });
+    return false;
+  }
 
   if (message.action === "getVideoInfo") {
     // Read video title and channel name from the page
@@ -150,7 +301,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Return the current video playback time (used by auto-scroll)
     const video = document.querySelector("video.html5-main-video");
     sendResponse({
-      currentTime: video ? Math.floor(video.currentTime) : 0,
+      currentTime: video ? video.currentTime : 0,
       paused: video ? video.paused : true,
     });
     return false;
@@ -206,6 +357,8 @@ function detachVideoSubtitleVideo() {
   if (!videoSubtitleVideo) return;
   videoSubtitleVideo.removeEventListener("timeupdate", renderVideoSubtitles);
   videoSubtitleVideo.removeEventListener("seeking", renderVideoSubtitles);
+  videoSubtitleVideo.removeEventListener("timeupdate", notifyDigestPlayback);
+  videoSubtitleVideo.removeEventListener("seeking", notifyDigestPlayback);
   videoSubtitleVideo = null;
 }
 
@@ -221,6 +374,8 @@ function ensureVideoSubtitleOverlay() {
     videoSubtitleVideo = video;
     video.addEventListener("timeupdate", renderVideoSubtitles);
     video.addEventListener("seeking", renderVideoSubtitles);
+    video.addEventListener("timeupdate", notifyDigestPlayback);
+    video.addEventListener("seeking", notifyDigestPlayback);
   }
 
   let overlay = document.getElementById("youtube-digest-subtitle-overlay");
@@ -285,7 +440,7 @@ function ensureVideoSubtitleOverlay() {
 function renderVideoSubtitles() {
   const overlay = ensureVideoSubtitleOverlay();
   if (!overlay) return;
-  if (!videoSubtitleState.enabled || !videoSubtitleVideo) {
+  if (!subtitlesVisible || !videoSubtitleState.enabled || !videoSubtitleVideo) {
     overlay.style.display = "none";
     overlay.textContent = "";
     return;
@@ -295,20 +450,20 @@ function renderVideoSubtitles() {
     videoSubtitleState.segments,
     videoSubtitleVideo.currentTime,
   );
-  if (!segment || !segment.translated) {
+  if (!segment) {
     overlay.style.display = "none";
     overlay.textContent = "";
     return;
   }
 
   overlay.textContent = "";
-  if (videoSubtitleState.mode === "bilingual" && segment.original) {
+  if (videoSubtitleState.mode !== "zh" && segment.original) {
     const original = document.createElement("div");
     original.className = "youtube-digest-subtitle-original";
     original.textContent = segment.original;
     overlay.appendChild(original);
   }
-  if (segment.translated) {
+  if (videoSubtitleState.mode !== "original" && segment.translated) {
     const translated = document.createElement("div");
     translated.className = "youtube-digest-subtitle-translated";
     translated.lang = "zh-CN";
@@ -320,6 +475,8 @@ function renderVideoSubtitles() {
 }
 
 function setVideoSubtitles(payload) {
+  if (payload.videoId !== new URL(window.location.href).searchParams.get("v"))
+    return;
   const mode = ["zh", "bilingual"].includes(payload?.mode)
     ? payload.mode
     : "original";
@@ -341,11 +498,12 @@ function setVideoSubtitles(payload) {
         .sort((a, b) => a.start - b.start)
     : [];
   videoSubtitleState = {
-    enabled: Boolean(payload?.enabled) && mode !== "original",
+    enabled: Boolean(payload?.enabled),
     mode,
     segments,
   };
   renderVideoSubtitles();
+  updateDigestPlayerControls();
 }
 
 // ============================================================
@@ -984,9 +1142,16 @@ function escapeHtmlForContent(text) {
  * we clean up old markers and re-inject the button.
  */
 document.addEventListener("yt-navigate-finish", () => {
+  const nextVideoId = new URL(window.location.href).searchParams.get("v");
+  if (nextVideoId === subtitleSessionVideoId) return;
+  subtitleSessionVideoId = nextVideoId;
+  subtitlesVisible = true;
+  lastPlaybackNotification = -1;
   videoSubtitleState = { enabled: false, mode: "original", segments: [] };
   detachVideoSubtitleVideo();
   document.getElementById("youtube-digest-subtitle-overlay")?.remove();
+  document.getElementById("youtube-digest-controls")?.remove();
+  updateDigestPanelVisibility();
 
   // Clean up old key moment markers when navigating to a new video
   const existingMarkers = document.querySelectorAll(".ytd-key-moment-markers");

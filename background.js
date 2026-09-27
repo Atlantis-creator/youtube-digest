@@ -237,70 +237,16 @@ function isYouTubeUrl(url) {
   }
 }
 
-async function initializePanelOptions() {
-  const tabs = await chrome.tabs.query({});
-  await Promise.all(
-    tabs
-      .filter((tab) => Number.isInteger(tab.id))
-      .map((tab) => updatePanelForTab(tab.id, tab.url || tab.pendingUrl || "")),
-  );
-}
-
-/**
- * Chrome opens the toolbar action only where updatePanelForTab has enabled a
- * tab-specific panel. There is deliberately no global manifest fallback.
- */
-chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: true })
-  .catch(() => {});
-
-chrome.runtime.onInstalled.addListener(({ reason }) => {
-  initializePanelOptions().catch(() => {});
-  if (reason === "install") chrome.runtime.openOptionsPage();
-});
-
-chrome.runtime.onStartup.addListener(() => {
-  initializePanelOptions().catch(() => {});
-});
-
-/**
- * Keep the side panel scoped to YouTube tabs only.
- *
- * Chrome side panels are "global" by default: once opened, the panel follows
- * you to every tab. To make YouTube Digest behave like a YouTube-only tool, we
- * enable the panel on YouTube tabs and disable it everywhere else. Disabling
- * on a tab makes Chrome hide/close the panel for that tab, so it never lingers
- * on a new tab or some other website.
- *
- * We have to react to BOTH things that can change "what tab you're looking at":
- *   - onUpdated: the current tab navigates to a new URL
- *   - onActivated: you switch to (or open) a different tab
- * The original code only handled onUpdated, which is why the panel stayed
- * visible when switching to an already-loaded non-YouTube tab.
- */
-function updatePanelForTab(tabId, url) {
-  if (!Number.isInteger(tabId)) return Promise.resolve();
-  const isYouTube = isYouTubeUrl(url);
-  // setOptions can reject if the tab just closed — ignore that harmlessly.
-  return chrome.sidePanel
-    .setOptions({ tabId, path: "sidepanel.html", enabled: isYouTube })
-    .catch(() => {});
-}
-
-// A tab navigated to a new URL.
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (!changeInfo.url) return; // ignore title/favicon-only updates
-  updatePanelForTab(tabId, changeInfo.url);
-});
-
-// The user switched to a different tab (or opened a new one).
-chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    updatePanelForTab(tabId, tab.url);
-  } catch (e) {
-    // Tab vanished before we could read it — nothing to do.
+// The toolbar opens the same persistent, tab-owned panel as the Digest button.
+chrome.action.onClicked.addListener((tab) => {
+  if (Number.isInteger(tab.id) && isYouTubeUrl(tab.url)) {
+    chrome.tabs
+      .sendMessage(tab.id, { action: "openDigestPanel" })
+      .catch(() => {});
   }
+});
+chrome.runtime.onInstalled.addListener(({ reason }) => {
+  if (reason === "install") chrome.runtime.openOptionsPage();
 });
 
 // ============================================================
@@ -413,56 +359,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  if (message.action === "openSidePanel") {
-    const tabId = sender.tab?.id;
-    debugLog("[YouTube Digest BG] openSidePanel requested from tab:", tabId);
-
-    // Re-enable the panel (it may have been disabled by auto-close) and open it.
-    // IMPORTANT: we call setOptions + open synchronously (no await between them)
-    // to preserve the user gesture context. Chrome requires sidePanel.open()
-    // to be called within a user gesture — awaiting anything first can expire it.
-    if (tabId && isYouTubeUrl(sender.tab?.url)) {
-      chrome.sidePanel.setOptions({
-        tabId,
-        path: "sidepanel.html",
-        enabled: true,
-      });
-      chrome.sidePanel
-        .open({ tabId })
-        .then(() => {
-          // Broadcast to side panel to start digest (in case it's already open)
-          setTimeout(() => {
-            chrome.runtime
-              .sendMessage({ action: "startDigestFromButton" })
-              .catch(() => {});
-          }, 300);
-        })
-        .catch((err) => {
-          console.error("[YouTube Digest BG] openSidePanel error:", err);
-        });
-    } else {
-      // Fallback: find the active tab
-      chrome.tabs
-        .query({ active: true, lastFocusedWindow: true })
-        .then((tabs) => {
-          if (tabs[0] && isYouTubeUrl(tabs[0].url)) {
-            chrome.sidePanel.setOptions({
-              tabId: tabs[0].id,
-              path: "sidepanel.html",
-              enabled: true,
-            });
-            chrome.sidePanel.open({ tabId: tabs[0].id }).catch((err) => {
-              console.error(
-                "[YouTube Digest BG] openSidePanel fallback error:",
-                err,
-              );
-            });
-          }
-        });
-    }
-
-    sendResponse({ success: true });
+  if (message.action === "getPanelContext") {
+    sendResponse({ tabId: sender.tab?.id, url: sender.tab?.url });
     return false;
+  }
+
+  if (message.action === "openSidePanel") {
+    if (!Number.isInteger(sender.tab?.id) || !isYouTubeUrl(sender.tab?.url)) {
+      sendResponse({ success: false });
+      return false;
+    }
+    chrome.tabs
+      .sendMessage(sender.tab.id, { action: "openDigestPanel" })
+      .then(sendResponse, (error) => sendResponse({ error: error.message }));
+    return true;
   }
 
   // Relay messages from side panel to content script
@@ -473,6 +383,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Query specifically for YouTube tabs to avoid side panel context issues
         // Try multiple query strategies to find the right tab
         let tabs = [];
+        // An embedded extension page can only address its own containing tab.
+        if (Number.isInteger(sender.tab?.id))
+          message = { ...message, tabId: sender.tab.id };
         if (Number.isInteger(message.tabId)) {
           const requestedTab = await chrome.tabs.get(message.tabId);
           if (isYouTubeUrl(requestedTab.url)) tabs = [requestedTab];

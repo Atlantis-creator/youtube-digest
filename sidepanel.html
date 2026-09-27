@@ -8,10 +8,25 @@
   </head>
   <body>
     <!-- HEADER -->
-    <!-- Note: the panel's own "YouTube Digest" title is shown by Chrome's side-panel
-         title bar, so we don't repeat a logo here. -->
+    <!-- This panel stays mounted inside the YouTube page when hidden. -->
     <div class="header">
       <div class="header-top">
+        <button
+          class="settings-btn"
+          id="hidePanelBtn"
+          type="button"
+          title="收起侧栏，字幕和翻译继续"
+        >
+          隐藏侧栏
+        </button>
+        <button
+          class="settings-btn"
+          id="toggleSubtitlesBtn"
+          type="button"
+          aria-pressed="true"
+        >
+          关闭字幕
+        </button>
         <!-- Video info -->
         <div class="video-info" id="videoInfo" style="display: none">
           <div class="video-title" id="videoTitle"></div>

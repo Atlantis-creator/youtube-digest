@@ -65,11 +65,10 @@ Clearing local data does not delete information already processed or retained by
 
 YouTube Digest uses Chrome permissions for these purposes:
 
-- `sidePanel`: display the YouTube Digest interface beside YouTube.
 - `storage`: store settings, keys, notes, and cached results locally.
-- `tabs`: identify and interact with the active YouTube tab.
+- `tabs`: identify and interact with the YouTube tab containing each panel.
 - `scripting`: coordinate the extension's YouTube page controls.
-- YouTube host access: read the active video's URL and metadata and provide timestamp controls.
+- YouTube host access: read the video's URL and metadata, embed the panel, and provide timestamp and subtitle controls. Only YouTube pages can embed the panel.
 - Supadata host access: retrieve transcripts.
 - DeepSeek host access: provide AI overviews, explanations, translation, and note polishing through DeepSeek V4 Flash.
 
