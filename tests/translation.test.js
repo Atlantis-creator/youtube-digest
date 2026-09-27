@@ -670,3 +670,36 @@ test("Chinese prompt preserves natural bilingual-learning style rules", () => {
   assert.match(prompt, /spaces between Chinese and adjacent English words or digits/);
   assert.match(prompt, /source-language `text`/);
 });
+
+test("sidebar and video subtitle languages decide translation independently", () => {
+  const { needsTranscriptTranslation } = loadSidepanelHelpers();
+  assert.equal(needsTranscriptTranslation("original", "original", true), false);
+  assert.equal(needsTranscriptTranslation("bilingual", "original", true), true);
+  assert.equal(needsTranscriptTranslation("original", "zh", true), true);
+  assert.equal(needsTranscriptTranslation("original", "bilingual", false), false);
+});
+
+test("sidebar in Original keeps only source text even while translations arrive", () => {
+  const { renderTranscriptSegmentContent } = loadSidepanelHelpers();
+  const html = renderTranscriptSegmentContent(
+    { id: "segment-0-0", text: "Original English sentence." },
+    "original",
+    "\u4e2d\u6587\u8bd1\u6587\u3002",
+    "",
+  );
+  assert.match(html, /Original English sentence/);
+  assert.doesNotMatch(html, /\u4e2d\u6587\u8bd1\u6587/);
+});
+
+test("language bar is pinned in the header with separate sidebar and video groups", () => {
+  const html = read("sidepanel.html");
+  const js = read("sidepanel.js");
+  const header = html.slice(html.indexOf('<div class="header">'), html.indexOf('id="contentArea"'));
+  assert.match(header, /id="languageBar"/);
+  assert.match(header, /data-transcript-mode="bilingual"/);
+  for (const mode of ["off", "original", "zh", "bilingual"]) {
+    assert.match(header, new RegExp(`data-video-subtitle-mode="${mode}"`));
+  }
+  assert.doesNotMatch(html, /id="toggleSubtitlesBtn"/);
+  assert.match(js, /buildVideoSubtitlePayload\(\s*segments,\s*currentVideoSubtitleMode,/);
+});

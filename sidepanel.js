@@ -45,6 +45,27 @@ function normalizeTranscriptMode(mode) {
   return ["original", "zh", "bilingual"].includes(mode) ? mode : "original";
 }
 
+// Video subtitle language is chosen independently of the sidebar and is
+// remembered across videos; its on/off state stays owned by the video page.
+const VIDEO_SUBTITLE_MODE_KEY = "videoSubtitleMode";
+let currentVideoSubtitleMode = "original";
+let videoSubtitlesVisible = true;
+
+function needsTranscriptTranslation(sidebarMode, videoMode, videoVisible) {
+  return (
+    normalizeTranscriptMode(sidebarMode) !== "original" ||
+    (Boolean(videoVisible) && normalizeTranscriptMode(videoMode) !== "original")
+  );
+}
+
+function transcriptNeedsTranslation() {
+  return needsTranscriptTranslation(
+    currentTranscriptMode,
+    currentVideoSubtitleMode,
+    videoSubtitlesVisible,
+  );
+}
+
 /**
  * Prevent a stopped service worker or dead message channel from leaving the
  * transcript queue stuck forever. The underlying Chrome message cannot be
@@ -236,6 +257,15 @@ function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
 
 document.addEventListener("DOMContentLoaded", async () => {
   setupEventListeners();
+  try {
+    const stored = await chrome.storage.local.get(VIDEO_SUBTITLE_MODE_KEY);
+    currentVideoSubtitleMode = normalizeTranscriptMode(
+      stored?.[VIDEO_SUBTITLE_MODE_KEY],
+    );
+  } catch {
+    currentVideoSubtitleMode = "original";
+  }
+  setVideoSubtitleModeButtons();
   const context = await chrome.runtime.sendMessage({
     action: "getPanelContext",
   });
@@ -309,10 +339,57 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 });
 
 function updateSubtitleButton(visible) {
-  const button = document.getElementById("toggleSubtitlesBtn");
-  if (!button) return;
-  button.textContent = visible ? "关闭字幕" : "显示字幕";
-  button.setAttribute("aria-pressed", String(visible));
+  const wasTranslating = transcriptNeedsTranslation();
+  videoSubtitlesVisible = Boolean(visible);
+  setVideoSubtitleModeButtons();
+  if (!wasTranslating && transcriptNeedsTranslation() && currentTranscript) {
+    refreshTranscriptKeepingPosition();
+  }
+}
+
+function setVideoSubtitleModeButtons() {
+  const selected = videoSubtitlesVisible ? currentVideoSubtitleMode : "off";
+  document.querySelectorAll("[data-video-subtitle-mode]").forEach((button) => {
+    const active = button.dataset.videoSubtitleMode === selected;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+async function setPlayerSubtitlesVisible(visible) {
+  const result = await chrome.runtime
+    .sendMessage({
+      action: "relayToContent",
+      tabId: youtubeTabId,
+      payload: { action: "setPlayerSubtitlesVisible", visible },
+    })
+    .catch(() => null);
+  if (result?.success) updateSubtitleButton(result.response.visible);
+}
+
+async function handleVideoSubtitleModeChange(mode) {
+  if (mode === "off") {
+    await setPlayerSubtitlesVisible(false);
+    return;
+  }
+  if (normalizeTranscriptMode(mode) !== mode) return;
+  const wasTranslating = transcriptNeedsTranslation();
+  currentVideoSubtitleMode = mode;
+  setVideoSubtitleModeButtons();
+  chrome.storage.local
+    .set({ [VIDEO_SUBTITLE_MODE_KEY]: mode })
+    .catch(() => {});
+  if (!videoSubtitlesVisible) {
+    // Turning subtitles back on starts translation work if it is now needed.
+    await setPlayerSubtitlesVisible(true);
+    syncVideoSubtitleOverlay();
+    return;
+  }
+  if (!wasTranslating && transcriptNeedsTranslation() && currentTranscript) {
+    refreshTranscriptKeepingPosition();
+    return;
+  }
+  syncVideoSubtitleOverlay();
 }
 
 function setupEventListeners() {
@@ -323,16 +400,6 @@ function setupEventListeners() {
       payload: { action: "hideDigestPanel" },
     });
   });
-  document
-    .getElementById("toggleSubtitlesBtn")
-    ?.addEventListener("click", async () => {
-      const result = await chrome.runtime.sendMessage({
-        action: "relayToContent",
-        tabId: youtubeTabId,
-        payload: { action: "togglePlayerSubtitles" },
-      });
-      if (result.success) updateSubtitleButton(result.response.visible);
-    });
   // Tab switching
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => switchTab(tab.dataset.tab));
@@ -360,9 +427,14 @@ function setupEventListeners() {
   document
     .getElementById("exportTranscriptBtn")
     ?.addEventListener("click", exportTranscript);
-  document.querySelectorAll(".transcript-mode-btn").forEach((button) => {
+  document.querySelectorAll("[data-transcript-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       handleTranscriptModeChange(button.dataset.transcriptMode);
+    });
+  });
+  document.querySelectorAll("[data-video-subtitle-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      handleVideoSubtitleModeChange(button.dataset.videoSubtitleMode);
     });
   });
 
@@ -493,7 +565,9 @@ async function startDigest(videoId, videoUrl) {
 
   // Every video change invalidates observer work and in-flight translations.
   if (videoId !== currentVideoId) {
-    updateSubtitleButton(true);
+    // The video page resets its subtitles to visible for every new video.
+    videoSubtitlesVisible = true;
+    setVideoSubtitleModeButtons();
     translationGeneration += 1;
     if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
     transcriptScrollObserver = null;
@@ -546,7 +620,7 @@ async function startDigest(videoId, videoUrl) {
 
     // Setup explain feature
     setupExplainFeature();
-    if (currentTranscriptMode !== "original") translateTranscript();
+    if (transcriptNeedsTranslation()) translateTranscript();
     return;
   }
 
@@ -605,7 +679,7 @@ async function startDigest(videoId, videoUrl) {
 
   // Setup explain feature for text selection
   setupExplainFeature();
-  if (currentTranscriptMode !== "original") translateTranscript();
+  if (transcriptNeedsTranslation()) translateTranscript();
 
   // Save transcript to cache (without analysis)
   await saveToCache(videoId);
@@ -918,6 +992,8 @@ function showState(state) {
   // remember to re-show it after showState("results"), and one path forgot —
   // which is why the tabs could vanish when re-opening an already-analyzed video.
   document.getElementById("tabsNav").style.display =
+    state === "results" ? "flex" : "none";
+  document.getElementById("languageBar").style.display =
     state === "results" ? "flex" : "none";
 
   if (state !== "results") {
@@ -1705,8 +1781,11 @@ function highlightActiveEntry(currentSeconds) {
 
   if (!activeEntry) return;
 
-  if (currentTranscriptMode !== "original" && activeTranslationQueue) {
-    activeTranslationQueue.enqueue(Number(activeEntry.dataset.segmentIndex));
+  if (transcriptNeedsTranslation() && activeTranslationQueue) {
+    // Video subtitles need the spoken line now and the next one shortly.
+    const activeIndex = Number(activeEntry.dataset.segmentIndex);
+    activeTranslationQueue.enqueue(activeIndex);
+    activeTranslationQueue.enqueue(activeIndex + 1);
   }
 
   // Skip if this entry is already highlighted (no DOM thrashing)
@@ -1783,7 +1862,7 @@ function syncVideoSubtitleOverlay() {
   const segments = getActiveTranscriptSegments();
   const subtitlePayload = buildVideoSubtitlePayload(
     segments,
-    currentTranscriptMode,
+    currentVideoSubtitleMode,
     (segment) =>
       transcriptParagraphCache.get(transcriptTranslationCacheKey(segment)) || "",
   );
@@ -1805,7 +1884,7 @@ function transcriptTranslationCacheKey(segment) {
 }
 
 function setTranscriptModeButtons(mode) {
-  document.querySelectorAll(".transcript-mode-btn").forEach((button) => {
+  document.querySelectorAll("[data-transcript-mode]").forEach((button) => {
     const active = button.dataset.transcriptMode === mode;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
@@ -1823,18 +1902,63 @@ async function handleTranscriptModeChange(mode) {
   if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
   transcriptScrollObserver = null;
   setTranscriptModeButtons(mode);
+  refreshTranscriptKeepingPosition();
   await updateCache();
+}
 
-  if (mode === "original") {
-    renderTranscript();
+function refreshTranscriptView() {
+  if (transcriptNeedsTranslation()) translateTranscript();
+  else renderTranscript();
+}
+
+/**
+ * Re-renders the transcript without losing the reader's place: when following
+ * playback, land on the line being spoken and keep following; when the reader
+ * has scrolled elsewhere, stay on the line they were reading.
+ */
+function refreshTranscriptKeepingPosition() {
+  const anchorSeconds = autoScrollEnabled ? null : firstVisibleTranscriptSeconds();
+  // Replacing the rows emits scroll events that are not the reader's doing.
+  lastAutoScrollTime = Date.now();
+  refreshTranscriptView();
+  if (anchorSeconds === null) {
+    playbackTrackingTick();
     return;
   }
+  scrollToTranscriptSeconds(anchorSeconds);
+}
 
-  await translateTranscript();
+function firstVisibleTranscriptSeconds() {
+  const contentArea = document.getElementById("contentArea");
+  if (!contentArea) return null;
+  const top = contentArea.getBoundingClientRect().top;
+  const entries = document.querySelectorAll("#transcriptList .transcript-entry");
+  for (const entry of entries) {
+    if (entry.getBoundingClientRect().bottom > top) {
+      return Number(entry.dataset.seconds);
+    }
+  }
+  return null;
+}
+
+function scrollToTranscriptSeconds(seconds) {
+  let target = null;
+  document
+    .querySelectorAll("#transcriptList .transcript-entry")
+    .forEach((entry) => {
+      if (Number(entry.dataset.seconds) <= seconds) target = entry;
+    });
+  if (!target) return;
+  lastAutoScrollTime = Date.now();
+  target.scrollIntoView({ block: "start" });
 }
 
 function renderTranscriptSegmentContent(segment, mode, translated, error) {
   const original = renderSubtitleInlineMarkup(segment.text);
+  if (mode === "original") {
+    // Translations may still run for video subtitles; the sidebar ignores them.
+    return `<span class="transcript-copy"><span class="transcript-text">${original}</span></span>`;
+  }
   let translationHtml = "";
   if (translated) {
     translationHtml = renderSubtitleInlineMarkup(translated);
@@ -1863,9 +1987,11 @@ function renderTranscriptModeRows(segments, mode) {
   badge.className = "transcript-source-badge";
   const originalLabel = getOriginalTranscriptLabel();
   const modeLabel =
-    mode === "bilingual"
-      ? `${originalLabel} + 简体中文`
-      : `简体中文 · translated from ${originalLabel}`;
+    mode === "original"
+      ? escapeHtml(originalLabel)
+      : mode === "bilingual"
+        ? `${originalLabel} + 简体中文`
+        : `简体中文 · translated from ${originalLabel}`;
   badge.innerHTML = `<span class="source-dot source-dot--subs"></span> From video subtitles · ${modeLabel}`;
   transcriptList.parentElement.insertBefore(badge, transcriptList);
 
@@ -1875,7 +2001,10 @@ function renderTranscriptModeRows(segments, mode) {
     const cached = transcriptParagraphCache.get(
       transcriptTranslationCacheKey(segment),
     );
-    div.className = `transcript-entry ${cached ? "translated" : "translating"}`;
+    div.className =
+      mode === "original"
+        ? "transcript-entry"
+        : `transcript-entry ${cached ? "translated" : "translating"}`;
     div.dataset.seconds = segment.start;
     div.dataset.segmentId = segment.id;
     div.dataset.segmentIndex = index;
@@ -1935,6 +2064,8 @@ function updateTranslatedRow(segment, index, alignedItem, generation) {
       alignedItem.text,
     );
   }
+  // Sidebar in Original: the translation only feeds the video subtitles.
+  if (currentTranscriptMode === "original") return;
 
   const copy = row.querySelector(".transcript-copy");
   if (copy) {
@@ -2048,7 +2179,7 @@ function retryTranslationSegment(index, generation) {
  */
 async function translateTranscript() {
   const segments = getActiveTranscriptSegments();
-  if (!segments.length || currentTranscriptMode === "original") return;
+  if (!segments.length || !transcriptNeedsTranslation()) return;
 
   translationGeneration += 1;
   const generation = translationGeneration;
@@ -2114,6 +2245,9 @@ async function translateTranscript() {
     },
   );
 
+  // With the sidebar in Original, only playback drives translation (for the
+  // video subtitles), so rows scrolled past in the sidebar cost nothing.
+  if (mode === "original") return;
   rows.forEach((row, index) => {
     if (!row.classList.contains("translated")) transcriptScrollObserver.observe(row);
     if (index < 3) enqueue(index);
@@ -2138,6 +2272,7 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   renderSubtitleInlineMarkup,
   renderTranscriptSegmentContent,
   normalizeTranscriptMode,
+  needsTranscriptTranslation,
   buildTranscriptExportContent,
   buildVideoSubtitlePayload,
 };
