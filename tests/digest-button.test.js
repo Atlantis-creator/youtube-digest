@@ -137,9 +137,13 @@ function createHarness() {
 
   const context = vm.createContext({
     console,
+    URL,
     document,
     window: {
-      location: { pathname: "/watch" },
+      location: {
+        pathname: "/watch",
+        href: "https://www.youtube.com/watch?v=videoA",
+      },
       addEventListener(type, listener) {
         windowListeners[type] = listener;
       },

@@ -28,6 +28,7 @@ let currentVideoDuration = 0;
 let isAnalysisLoading = false; // Track if analysis is in progress
 let youtubeTabId = null; // Store the YouTube tab ID for reliable messaging
 let errorAction = null;
+let digestRequestGeneration = 0;
 
 // --- Translation state ---
 // The public transcript control intentionally supports only the original
@@ -235,6 +236,11 @@ function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
 
 document.addEventListener("DOMContentLoaded", async () => {
   setupEventListeners();
+  const context = await chrome.runtime.sendMessage({
+    action: "getPanelContext",
+  });
+  if (!Number.isInteger(context?.tabId)) return;
+  youtubeTabId = context.tabId;
   await evictOldCacheEntries(20);
 
   const configStatus = await chrome.runtime.sendMessage({
@@ -251,6 +257,19 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 // Listen for messages from the Digest button on YouTube page
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (sender.tab && sender.tab.id !== youtubeTabId) return false;
+  if (
+    message.action === "digestPlayback" &&
+    message.videoId === currentVideoId
+  ) {
+    highlightActiveEntry(message.currentTime);
+  }
+  if (
+    message.action === "subtitleVisibilityChanged" &&
+    message.videoId === currentVideoId
+  ) {
+    updateSubtitleButton(message.visible);
+  }
   if (message.action === "startDigestFromButton") {
     // Load the digest for the current video. Served from cache when we've
     // seen this video before (no API calls); fetched fresh otherwise.
@@ -276,85 +295,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // ============================================================
-// FOLLOW THE ACTIVE TAB
+// FOLLOW THE CONTAINING TAB
 // ============================================================
-// The panel watches which tab is in front of it and reacts:
-//   - Front tab is NOT YouTube  -> the panel closes itself (window.close()).
-//     We do this OURSELVES rather than relying only on the background
-//     script's per-tab enable/disable, because Chrome doesn't reliably
-//     apply per-tab panel state to tabs spawned in unusual ways (e.g. a
-//     link opened from another app) — which let the panel linger on
-//     non-YouTube pages.
-//   - Front tab IS YouTube but on a different video -> refresh the digest.
-//     YouTube is a single-page app (clicking a video swaps content without
-//     a reload), so we track URL changes; startDigest() caches per video,
-//     making re-checks instant and free for already-digested videos.
-//
-// Everything is scoped to the window this panel lives in: tab switches in
-// OTHER browser windows must not close this panel or hijack its content.
-
 let navigationRefreshTimer = null;
-let panelWindowId = null;
-chrome.windows.getCurrent().then((w) => {
-  panelWindowId = w.id;
-});
-
-function scheduleDigestRefresh() {
-  // Small delay lets YouTube finish rendering the new video's title and
-  // description before we read them. Also collapses rapid-fire URL events
-  // into a single refresh.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (tabId !== youtubeTabId || !changeInfo.url) return;
+  if (extractVideoId(changeInfo.url) === currentVideoId) return;
+  // Invalidate a fetch immediately, before the delayed UI refresh.
+  digestRequestGeneration += 1;
+  translationGeneration += 1;
   clearTimeout(navigationRefreshTimer);
-  navigationRefreshTimer = setTimeout(() => {
-    checkCurrentTab();
-  }, 600);
-}
-
-function panelIsShowingResults() {
-  const results = document.getElementById("resultsState");
-  return results && results.style.display !== "none";
-}
-
-/**
- * Reacts to the URL now in front of the panel: close on non-YouTube,
- * refresh the digest when the video changed.
- */
-function handleFrontTabUrl(url) {
-  if (!(url || "").startsWith("https://www.youtube.com")) {
-    // Panel is a YouTube-only tool — remove itself from non-YouTube tabs.
-    window.close();
-    return;
-  }
-
-  const newVideoId = extractVideoId(url);
-  // Refresh when the video changed, or when we're not currently showing
-  // results (e.g. user went home, then clicked back into the same video).
-  if (newVideoId !== currentVideoId || !panelIsShowingResults()) {
-    scheduleDigestRefresh();
-  }
-}
-
-// Fires when a tab's URL changes — including YouTube's no-reload navigation.
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (!changeInfo.url || !tab.active) return;
-  if (panelWindowId !== null && tab.windowId !== panelWindowId) return;
-  handleFrontTabUrl(changeInfo.url);
+  navigationRefreshTimer = setTimeout(checkCurrentTab, 600);
 });
 
-// Fires when a different tab comes to the front — switching tabs, or a new
-// tab being opened (including ones opened by clicking links in other apps).
-chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
-  if (panelWindowId !== null && windowId !== panelWindowId) return;
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    // Brand-new tabs may not have committed their URL yet — fall back to
-    // the pending one so we judge where the tab is actually going.
-    handleFrontTabUrl(tab.url || tab.pendingUrl || "");
-  } catch (e) {
-    // Tab closed before we could read it — nothing to do.
-  }
-});
+function updateSubtitleButton(visible) {
+  const button = document.getElementById("toggleSubtitlesBtn");
+  if (!button) return;
+  button.textContent = visible ? "关闭字幕" : "显示字幕";
+  button.setAttribute("aria-pressed", String(visible));
+}
 
 function setupEventListeners() {
+  document.getElementById("hidePanelBtn")?.addEventListener("click", () => {
+    chrome.runtime.sendMessage({
+      action: "relayToContent",
+      tabId: youtubeTabId,
+      payload: { action: "hideDigestPanel" },
+    });
+  });
+  document
+    .getElementById("toggleSubtitlesBtn")
+    ?.addEventListener("click", async () => {
+      const result = await chrome.runtime.sendMessage({
+        action: "relayToContent",
+        tabId: youtubeTabId,
+        payload: { action: "togglePlayerSubtitles" },
+      });
+      if (result.success) updateSubtitleButton(result.response.visible);
+    });
   // Tab switching
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => switchTab(tab.dataset.tab));
@@ -428,43 +406,12 @@ function setNotesFilter(showAll) {
 // ============================================================
 
 async function checkCurrentTab() {
+  const requestGeneration = ++digestRequestGeneration;
   try {
-    // Try multiple strategies to find the YouTube tab
-    let tab = null;
-
-    // Strategy 1: Active tab in last focused window
-    let tabs = await chrome.tabs.query({
-      active: true,
-      lastFocusedWindow: true,
-    });
-    if (tabs[0]?.url?.includes("youtube.com")) {
-      tab = tabs[0];
-    }
-
-    // Strategy 2: Any active YouTube tab
-    if (!tab) {
-      tabs = await chrome.tabs.query({
-        url: "https://www.youtube.com/*",
-        active: true,
-      });
-      if (tabs[0]) tab = tabs[0];
-    }
-
-    // Strategy 3: Any YouTube tab (last resort)
-    if (!tab) {
-      tabs = await chrome.tabs.query({ url: "https://www.youtube.com/*" });
-      if (tabs[0]) tab = tabs[0];
-    }
-
-    debugLog("[YouTube Digest Panel] Found tab:", tab?.id, tab?.url);
-
-    if (!tab?.url) {
-      showState("welcome");
-      return;
-    }
-
-    // Store the tab ID for reliable messaging later
-    youtubeTabId = tab.id;
+    if (!Number.isInteger(youtubeTabId)) return;
+    const tab = await chrome.tabs.get(youtubeTabId);
+    if (requestGeneration !== digestRequestGeneration) return;
+    if (!tab?.url) return;
 
     const videoId = extractVideoId(tab.url);
 
@@ -475,8 +422,10 @@ async function checkCurrentTab() {
         // Route through background script for reliable message passing
         const result = await chrome.runtime.sendMessage({
           action: "relayToContent",
+          tabId: youtubeTabId,
           payload: { action: "getVideoInfo" },
         });
+        if (requestGeneration !== digestRequestGeneration) return;
         debugLog("[YouTube Digest Panel] getVideoInfo result:", result);
         if (result.success && result.response) {
           currentVideoTitle = result.response.title || "";
@@ -492,8 +441,11 @@ async function checkCurrentTab() {
         currentVideoDuration = 0;
       }
 
-      startDigest(videoId, tab.url);
+      if (requestGeneration !== digestRequestGeneration) return;
+      await startDigest(videoId, tab.url);
     } else {
+      currentVideoId = null;
+      translationGeneration += 1;
       showState("welcome");
     }
   } catch (error) {
@@ -532,6 +484,7 @@ function extractVideoId(url) {
 // ============================================================
 
 async function startDigest(videoId, videoUrl) {
+  const requestGeneration = ++digestRequestGeneration;
   // Check if we already have this video loaded in memory
   if (videoId === currentVideoId && currentAnalysis) {
     showState("results");
@@ -540,6 +493,7 @@ async function startDigest(videoId, videoUrl) {
 
   // Every video change invalidates observer work and in-flight translations.
   if (videoId !== currentVideoId) {
+    updateSubtitleButton(true);
     translationGeneration += 1;
     if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
     transcriptScrollObserver = null;
@@ -547,6 +501,7 @@ async function startDigest(videoId, videoUrl) {
 
   // Check cache for this video
   const cached = await loadFromCache(videoId);
+  if (requestGeneration !== digestRequestGeneration) return;
   if (cached) {
     debugLog("Loading from cache:", videoId);
     currentVideoId = videoId;
@@ -618,6 +573,7 @@ async function startDigest(videoId, videoUrl) {
     action: "fetchTranscript",
     videoId: videoId,
   });
+  if (requestGeneration !== digestRequestGeneration) return;
 
   if (!transcriptResult.success) {
     if (transcriptResult.error === "NO_SUPADATA_KEY") {
@@ -1108,6 +1064,7 @@ async function seekTo(seconds) {
     // Fallback: route through background script
     const result = await chrome.runtime.sendMessage({
       action: "relayToContent",
+      tabId: youtubeTabId,
       payload,
     });
     debugLog("[YouTube Digest Panel] seekTo relay result:", result);
@@ -1139,6 +1096,7 @@ async function highlightMomentsOnPage(moments) {
     // Route through background script for reliable message passing
     await chrome.runtime.sendMessage({
       action: "relayToContent",
+      tabId: youtubeTabId,
       payload: {
         action: "highlightMoments",
         moments: moments,
@@ -1687,6 +1645,7 @@ async function playbackTrackingTick() {
   try {
     const result = await chrome.runtime.sendMessage({
       action: "relayToContent",
+      tabId: youtubeTabId,
       payload: { action: "getCurrentTime" },
     });
 
@@ -1733,10 +1692,10 @@ function highlightActiveEntry(currentSeconds) {
   // Find the entry whose time range contains the current playback time
   let activeEntry = null;
   entries.forEach((entry, index) => {
-    const entrySeconds = parseInt(entry.dataset.seconds);
+    const entrySeconds = Number(entry.dataset.seconds);
     const nextEntry = entries[index + 1];
     const nextSeconds = nextEntry
-      ? parseInt(nextEntry.dataset.seconds)
+      ? Number(nextEntry.dataset.seconds)
       : Infinity;
 
     if (currentSeconds >= entrySeconds && currentSeconds < nextSeconds) {
@@ -1800,7 +1759,7 @@ function buildVideoSubtitlePayload(segments, mode, getTranslation) {
   const safeMode = normalizeTranscriptMode(mode);
   const sourceSegments = Array.isArray(segments) ? segments : [];
   return {
-    enabled: safeMode !== "original",
+    enabled: true,
     mode: safeMode,
     segments: sourceSegments.map((segment, index) => {
       const start = Math.max(0, Number(segment?.start) || 0);
@@ -1832,7 +1791,11 @@ function syncVideoSubtitleOverlay() {
     .sendMessage({
       action: "relayToContent",
       tabId: youtubeTabId,
-      payload: { action: "setVideoSubtitles", ...subtitlePayload },
+      payload: {
+        action: "setVideoSubtitles",
+        videoId: currentVideoId,
+        ...subtitlePayload,
+      },
     })
     .catch(() => {});
 }

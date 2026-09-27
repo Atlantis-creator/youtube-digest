@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Turn every YouTube video into a resource for deep learning. YouTube Digest brings transcripts, bilingual translation, AI overviews, explanations, and timestamped notes into one Chrome side panel, so you can study ideas and language without losing your place.
+Turn every YouTube video into a resource for deep learning. YouTube Digest brings transcripts, bilingual translation, AI overviews, explanations, and timestamped notes into one panel inside the YouTube page, so you can study ideas and language without losing your place.
 
 - Turn captions into a readable, searchable learning resource.
 - Learn languages with the original transcript, a Simplified Chinese translation, or an aligned bilingual view.
@@ -96,9 +96,15 @@ Keys and settings are stored in Chrome's local extension storage on your device.
 5. Select transcript text when you want an AI explanation.
 6. Save a note from the player or a key quote, then revisit it from **Notes**.
 
+Original subtitles appear on the video by default after the transcript loads. Use **关闭字幕** (hide subtitles) or **显示字幕** (show subtitles) on the player or panel to change visibility independently of the language mode. A new video starts with subtitles visible again.
+
+Use **隐藏侧栏** to collapse the panel while keeping subtitles, translation, and your reading position. Use **展开侧栏** on the player to restore it. Fullscreen temporarily hides the panel; leaving fullscreen restores it only if it was visible before. Expanding the panel from fullscreen exits fullscreen first.
+
+The page and player shrink to make room for the panel. Drag its left edge to resize it; the width is remembered when released. The focused edge also supports the left/right arrow keys. Narrow windows limit the panel width to keep room for the video.
+
 ## What works today
 
-- Google Chrome 116 or newer, using the Side Panel API.
+- Google Chrome 116 or newer.
 - Standard `youtube.com/watch` video pages.
 - Native subtitle tracks returned by Supadata. YouTube Digest prefers English when available, but may show another native language.
 - Original, Simplified Chinese, and aligned bilingual transcript views.
