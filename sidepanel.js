@@ -45,6 +45,27 @@ function normalizeTranscriptMode(mode) {
   return ["original", "zh", "bilingual"].includes(mode) ? mode : "original";
 }
 
+// Video subtitle language is chosen independently of the sidebar and is
+// remembered across videos; its on/off state stays owned by the video page.
+const VIDEO_SUBTITLE_MODE_KEY = "videoSubtitleMode";
+let currentVideoSubtitleMode = "original";
+let videoSubtitlesVisible = true;
+
+function needsTranscriptTranslation(sidebarMode, videoMode, videoVisible) {
+  return (
+    normalizeTranscriptMode(sidebarMode) !== "original" ||
+    (Boolean(videoVisible) && normalizeTranscriptMode(videoMode) !== "original")
+  );
+}
+
+function transcriptNeedsTranslation() {
+  return needsTranscriptTranslation(
+    currentTranscriptMode,
+    currentVideoSubtitleMode,
+    videoSubtitlesVisible,
+  );
+}
+
 /**
  * Prevent a stopped service worker or dead message channel from leaving the
  * transcript queue stuck forever. The underlying Chrome message cannot be
@@ -236,6 +257,15 @@ function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
 
 document.addEventListener("DOMContentLoaded", async () => {
   setupEventListeners();
+  try {
+    const stored = await chrome.storage.local.get(VIDEO_SUBTITLE_MODE_KEY);
+    currentVideoSubtitleMode = normalizeTranscriptMode(
+      stored?.[VIDEO_SUBTITLE_MODE_KEY],
+    );
+  } catch {
+    currentVideoSubtitleMode = "original";
+  }
+  setVideoSubtitleModeButtons();
   const context = await chrome.runtime.sendMessage({
     action: "getPanelContext",
   });
@@ -309,10 +339,57 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 });
 
 function updateSubtitleButton(visible) {
-  const button = document.getElementById("toggleSubtitlesBtn");
-  if (!button) return;
-  button.textContent = visible ? "关闭字幕" : "显示字幕";
-  button.setAttribute("aria-pressed", String(visible));
+  const wasTranslating = transcriptNeedsTranslation();
+  videoSubtitlesVisible = Boolean(visible);
+  setVideoSubtitleModeButtons();
+  if (!wasTranslating && transcriptNeedsTranslation() && currentTranscript) {
+    refreshTranscriptKeepingPosition();
+  }
+}
+
+function setVideoSubtitleModeButtons() {
+  const selected = videoSubtitlesVisible ? currentVideoSubtitleMode : "off";
+  document.querySelectorAll("[data-video-subtitle-mode]").forEach((button) => {
+    const active = button.dataset.videoSubtitleMode === selected;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+async function setPlayerSubtitlesVisible(visible) {
+  const result = await chrome.runtime
+    .sendMessage({
+      action: "relayToContent",
+      tabId: youtubeTabId,
+      payload: { action: "setPlayerSubtitlesVisible", visible },
+    })
+    .catch(() => null);
+  if (result?.success) updateSubtitleButton(result.response.visible);
+}
+
+async function handleVideoSubtitleModeChange(mode) {
+  if (mode === "off") {
+    await setPlayerSubtitlesVisible(false);
+    return;
+  }
+  if (normalizeTranscriptMode(mode) !== mode) return;
+  const wasTranslating = transcriptNeedsTranslation();
+  currentVideoSubtitleMode = mode;
+  setVideoSubtitleModeButtons();
+  chrome.storage.local
+    .set({ [VIDEO_SUBTITLE_MODE_KEY]: mode })
+    .catch(() => {});
+  if (!videoSubtitlesVisible) {
+    // Turning subtitles back on starts translation work if it is now needed.
+    await setPlayerSubtitlesVisible(true);
+    syncVideoSubtitleOverlay();
+    return;
+  }
+  if (!wasTranslating && transcriptNeedsTranslation() && currentTranscript) {
+    refreshTranscriptKeepingPosition();
+    return;
+  }
+  syncVideoSubtitleOverlay();
 }
 
 function setupEventListeners() {
@@ -323,16 +400,6 @@ function setupEventListeners() {
       payload: { action: "hideDigestPanel" },
     });
   });
-  document
-    .getElementById("toggleSubtitlesBtn")
-    ?.addEventListener("click", async () => {
-      const result = await chrome.runtime.sendMessage({
-        action: "relayToContent",
-        tabId: youtubeTabId,
-        payload: { action: "togglePlayerSubtitles" },
-      });
-      if (result.success) updateSubtitleButton(result.response.visible);
-    });
   // Tab switching
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => switchTab(tab.dataset.tab));
@@ -360,9 +427,23 @@ function setupEventListeners() {
   document
     .getElementById("exportTranscriptBtn")
     ?.addEventListener("click", exportTranscript);
-  document.querySelectorAll(".transcript-mode-btn").forEach((button) => {
+  document
+    .getElementById("landToWikiBtn")
+    ?.addEventListener("click", openWikiLanding);
+  document
+    .getElementById("wikiLandingCancel")
+    ?.addEventListener("click", closeWikiLanding);
+  document
+    .getElementById("wikiLandingPanel")
+    ?.addEventListener("submit", submitWikiLanding);
+  document.querySelectorAll("[data-transcript-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       handleTranscriptModeChange(button.dataset.transcriptMode);
+    });
+  });
+  document.querySelectorAll("[data-video-subtitle-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      handleVideoSubtitleModeChange(button.dataset.videoSubtitleMode);
     });
   });
 
@@ -493,7 +574,11 @@ async function startDigest(videoId, videoUrl) {
 
   // Every video change invalidates observer work and in-flight translations.
   if (videoId !== currentVideoId) {
-    updateSubtitleButton(true);
+    // The video page resets its subtitles to visible for every new video.
+    videoSubtitlesVisible = true;
+    setVideoSubtitleModeButtons();
+    closeWikiLanding();
+    setWikiLandingStatus("");
     translationGeneration += 1;
     if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
     transcriptScrollObserver = null;
@@ -546,7 +631,7 @@ async function startDigest(videoId, videoUrl) {
 
     // Setup explain feature
     setupExplainFeature();
-    if (currentTranscriptMode !== "original") translateTranscript();
+    if (transcriptNeedsTranslation()) translateTranscript();
     return;
   }
 
@@ -605,7 +690,7 @@ async function startDigest(videoId, videoUrl) {
 
   // Setup explain feature for text selection
   setupExplainFeature();
-  if (currentTranscriptMode !== "original") translateTranscript();
+  if (transcriptNeedsTranslation()) translateTranscript();
 
   // Save transcript to cache (without analysis)
   await saveToCache(videoId);
@@ -872,6 +957,120 @@ function getTranscriptContentForCurrentMode() {
   );
 }
 
+// ============================================================
+// SAVE TO WIKI — platform caption import into an Obsidian Wiki
+// ============================================================
+// The panel only confirms Wiki, author and title; the local landing host
+// (native-host/) owns paths, duplicate checks, the file format and the commit.
+
+const LAST_LANDING_WIKI_KEY = "lastLandingWiki";
+
+function buildWikiLandingRequest({ wiki, author, title, videoId, segments }) {
+  return {
+    action: "land",
+    wiki: String(wiki || ""),
+    author: String(author || "").trim(),
+    title: String(title || "").trim(),
+    source: `https://www.youtube.com/watch?v=${encodeURIComponent(videoId || "")}`,
+    segments: (Array.isArray(segments) ? segments : [])
+      .map((segment) => ({
+        start: Math.max(0, Math.floor(Number(segment?.start) || 0)),
+        text: normalizeCaptionText(segment?.text),
+      }))
+      .filter((segment) => segment.text),
+  };
+}
+
+function describeWikiLandingResult(result) {
+  if (!result?.ok) {
+    const existing = result?.existing ? `（已存在：${result.existing}）` : "";
+    return { error: true, text: `未落盘：${result?.error || "未知错误"}${existing}` };
+  }
+  const commit = result.commit?.ok
+    ? `；已提交 ${result.commit.hash || ""}`.trimEnd()
+    : `；提交失败：${result.commit?.error || "未知原因"}`;
+  return { error: !result.commit?.ok, text: `已落盘：${result.path}${commit}` };
+}
+
+function setWikiLandingStatus(text, isError = false) {
+  const status = document.getElementById("wikiLandingStatus");
+  if (!status) return;
+  status.textContent = text;
+  status.hidden = !text;
+  status.classList.toggle("error", isError);
+}
+
+function closeWikiLanding() {
+  const panel = document.getElementById("wikiLandingPanel");
+  if (panel) panel.hidden = true;
+}
+
+async function openWikiLanding() {
+  if (!currentVideoId || !currentTranscript?.length) return;
+  const panel = document.getElementById("wikiLandingPanel");
+  const select = document.getElementById("wikiLandingWiki");
+  document.getElementById("wikiLandingAuthor").value = currentChannelName;
+  document.getElementById("wikiLandingTitle").value = currentVideoTitle;
+  select.innerHTML = "";
+  panel.hidden = true;
+  setWikiLandingStatus("正在读取 Wiki 列表…");
+
+  const [result, stored] = await Promise.all([
+    chrome.runtime
+      .sendMessage({ action: "vaultHost", request: { action: "listWikis" } })
+      .catch((error) => ({ ok: false, error: error.message })),
+    chrome.storage.local.get(LAST_LANDING_WIKI_KEY).catch(() => ({})),
+  ]);
+  if (!result?.ok) {
+    setWikiLandingStatus(`无法读取 Wiki：${result?.error || "未知错误"}`, true);
+    return;
+  }
+  if (!result.wikis.length) {
+    setWikiLandingStatus("vault 中没有含 2 - Source Material 的 Wiki。", true);
+    return;
+  }
+  result.wikis.forEach((wiki) => {
+    const option = document.createElement("option");
+    option.value = wiki;
+    option.textContent = wiki;
+    select.appendChild(option);
+  });
+  if (result.wikis.includes(stored?.[LAST_LANDING_WIKI_KEY])) {
+    select.value = stored[LAST_LANDING_WIKI_KEY];
+  }
+  setWikiLandingStatus("");
+  panel.hidden = false;
+}
+
+async function submitWikiLanding(event) {
+  event.preventDefault();
+  const confirmButton = document.getElementById("wikiLandingConfirm");
+  const request = buildWikiLandingRequest({
+    wiki: document.getElementById("wikiLandingWiki").value,
+    author: document.getElementById("wikiLandingAuthor").value,
+    title: document.getElementById("wikiLandingTitle").value,
+    videoId: currentVideoId,
+    segments: getActiveTranscriptSegments(),
+  });
+  confirmButton.disabled = true;
+  setWikiLandingStatus("正在落盘…");
+  try {
+    const result = await chrome.runtime
+      .sendMessage({ action: "vaultHost", request })
+      .catch((error) => ({ ok: false, error: error.message }));
+    const described = describeWikiLandingResult(result);
+    setWikiLandingStatus(described.text, described.error);
+    if (result?.ok) {
+      closeWikiLanding();
+      chrome.storage.local
+        .set({ [LAST_LANDING_WIKI_KEY]: request.wiki })
+        .catch(() => {});
+    }
+  } finally {
+    confirmButton.disabled = false;
+  }
+}
+
 function exportTranscript() {
   const transcriptContent = getTranscriptContentForCurrentMode();
   const videoUrl = `https://youtube.com/watch?v=${currentVideoId}`;
@@ -918,6 +1117,8 @@ function showState(state) {
   // remember to re-show it after showState("results"), and one path forgot —
   // which is why the tabs could vanish when re-opening an already-analyzed video.
   document.getElementById("tabsNav").style.display =
+    state === "results" ? "flex" : "none";
+  document.getElementById("languageBar").style.display =
     state === "results" ? "flex" : "none";
 
   if (state !== "results") {
@@ -1705,8 +1906,11 @@ function highlightActiveEntry(currentSeconds) {
 
   if (!activeEntry) return;
 
-  if (currentTranscriptMode !== "original" && activeTranslationQueue) {
-    activeTranslationQueue.enqueue(Number(activeEntry.dataset.segmentIndex));
+  if (transcriptNeedsTranslation() && activeTranslationQueue) {
+    // Video subtitles need the spoken line now and the next one shortly.
+    const activeIndex = Number(activeEntry.dataset.segmentIndex);
+    activeTranslationQueue.enqueue(activeIndex);
+    activeTranslationQueue.enqueue(activeIndex + 1);
   }
 
   // Skip if this entry is already highlighted (no DOM thrashing)
@@ -1783,7 +1987,7 @@ function syncVideoSubtitleOverlay() {
   const segments = getActiveTranscriptSegments();
   const subtitlePayload = buildVideoSubtitlePayload(
     segments,
-    currentTranscriptMode,
+    currentVideoSubtitleMode,
     (segment) =>
       transcriptParagraphCache.get(transcriptTranslationCacheKey(segment)) || "",
   );
@@ -1805,7 +2009,7 @@ function transcriptTranslationCacheKey(segment) {
 }
 
 function setTranscriptModeButtons(mode) {
-  document.querySelectorAll(".transcript-mode-btn").forEach((button) => {
+  document.querySelectorAll("[data-transcript-mode]").forEach((button) => {
     const active = button.dataset.transcriptMode === mode;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
@@ -1823,18 +2027,63 @@ async function handleTranscriptModeChange(mode) {
   if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
   transcriptScrollObserver = null;
   setTranscriptModeButtons(mode);
+  refreshTranscriptKeepingPosition();
   await updateCache();
+}
 
-  if (mode === "original") {
-    renderTranscript();
+function refreshTranscriptView() {
+  if (transcriptNeedsTranslation()) translateTranscript();
+  else renderTranscript();
+}
+
+/**
+ * Re-renders the transcript without losing the reader's place: when following
+ * playback, land on the line being spoken and keep following; when the reader
+ * has scrolled elsewhere, stay on the line they were reading.
+ */
+function refreshTranscriptKeepingPosition() {
+  const anchorSeconds = autoScrollEnabled ? null : firstVisibleTranscriptSeconds();
+  // Replacing the rows emits scroll events that are not the reader's doing.
+  lastAutoScrollTime = Date.now();
+  refreshTranscriptView();
+  if (anchorSeconds === null) {
+    playbackTrackingTick();
     return;
   }
+  scrollToTranscriptSeconds(anchorSeconds);
+}
 
-  await translateTranscript();
+function firstVisibleTranscriptSeconds() {
+  const contentArea = document.getElementById("contentArea");
+  if (!contentArea) return null;
+  const top = contentArea.getBoundingClientRect().top;
+  const entries = document.querySelectorAll("#transcriptList .transcript-entry");
+  for (const entry of entries) {
+    if (entry.getBoundingClientRect().bottom > top) {
+      return Number(entry.dataset.seconds);
+    }
+  }
+  return null;
+}
+
+function scrollToTranscriptSeconds(seconds) {
+  let target = null;
+  document
+    .querySelectorAll("#transcriptList .transcript-entry")
+    .forEach((entry) => {
+      if (Number(entry.dataset.seconds) <= seconds) target = entry;
+    });
+  if (!target) return;
+  lastAutoScrollTime = Date.now();
+  target.scrollIntoView({ block: "start" });
 }
 
 function renderTranscriptSegmentContent(segment, mode, translated, error) {
   const original = renderSubtitleInlineMarkup(segment.text);
+  if (mode === "original") {
+    // Translations may still run for video subtitles; the sidebar ignores them.
+    return `<span class="transcript-copy"><span class="transcript-text">${original}</span></span>`;
+  }
   let translationHtml = "";
   if (translated) {
     translationHtml = renderSubtitleInlineMarkup(translated);
@@ -1863,9 +2112,11 @@ function renderTranscriptModeRows(segments, mode) {
   badge.className = "transcript-source-badge";
   const originalLabel = getOriginalTranscriptLabel();
   const modeLabel =
-    mode === "bilingual"
-      ? `${originalLabel} + 简体中文`
-      : `简体中文 · translated from ${originalLabel}`;
+    mode === "original"
+      ? escapeHtml(originalLabel)
+      : mode === "bilingual"
+        ? `${originalLabel} + 简体中文`
+        : `简体中文 · translated from ${originalLabel}`;
   badge.innerHTML = `<span class="source-dot source-dot--subs"></span> From video subtitles · ${modeLabel}`;
   transcriptList.parentElement.insertBefore(badge, transcriptList);
 
@@ -1875,7 +2126,10 @@ function renderTranscriptModeRows(segments, mode) {
     const cached = transcriptParagraphCache.get(
       transcriptTranslationCacheKey(segment),
     );
-    div.className = `transcript-entry ${cached ? "translated" : "translating"}`;
+    div.className =
+      mode === "original"
+        ? "transcript-entry"
+        : `transcript-entry ${cached ? "translated" : "translating"}`;
     div.dataset.seconds = segment.start;
     div.dataset.segmentId = segment.id;
     div.dataset.segmentIndex = index;
@@ -1935,6 +2189,8 @@ function updateTranslatedRow(segment, index, alignedItem, generation) {
       alignedItem.text,
     );
   }
+  // Sidebar in Original: the translation only feeds the video subtitles.
+  if (currentTranscriptMode === "original") return;
 
   const copy = row.querySelector(".transcript-copy");
   if (copy) {
@@ -2048,7 +2304,7 @@ function retryTranslationSegment(index, generation) {
  */
 async function translateTranscript() {
   const segments = getActiveTranscriptSegments();
-  if (!segments.length || currentTranscriptMode === "original") return;
+  if (!segments.length || !transcriptNeedsTranslation()) return;
 
   translationGeneration += 1;
   const generation = translationGeneration;
@@ -2114,6 +2370,9 @@ async function translateTranscript() {
     },
   );
 
+  // With the sidebar in Original, only playback drives translation (for the
+  // video subtitles), so rows scrolled past in the sidebar cost nothing.
+  if (mode === "original") return;
   rows.forEach((row, index) => {
     if (!row.classList.contains("translated")) transcriptScrollObserver.observe(row);
     if (index < 3) enqueue(index);
@@ -2138,6 +2397,9 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   renderSubtitleInlineMarkup,
   renderTranscriptSegmentContent,
   normalizeTranscriptMode,
+  needsTranscriptTranslation,
+  buildWikiLandingRequest,
+  describeWikiLandingResult,
   buildTranscriptExportContent,
   buildVideoSubtitlePayload,
 };

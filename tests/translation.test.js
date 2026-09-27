@@ -68,6 +68,7 @@ function loadBackgroundHelpers({
   fetchImpl = fetch,
   setTimeoutImpl = () => 0,
   clearTimeoutImpl = () => {},
+  sendNativeMessage = async () => ({ ok: true }),
 } = {}) {
   const listeners = { addListener() {} };
   const sandbox = {
@@ -97,6 +98,7 @@ function loadBackgroundHelpers({
         onStartup: listeners,
         onMessage: listeners,
         openOptionsPage() {},
+        sendNativeMessage,
         getURL: (resourcePath) => `chrome-extension://test/${resourcePath}`,
       },
       tabs: { onUpdated: listeners, onActivated: listeners },
@@ -669,4 +671,94 @@ test("Chinese prompt preserves natural bilingual-learning style rules", () => {
   assert.match(prompt, /Use 你, never 您/);
   assert.match(prompt, /spaces between Chinese and adjacent English words or digits/);
   assert.match(prompt, /source-language `text`/);
+});
+
+test("sidebar and video subtitle languages decide translation independently", () => {
+  const { needsTranscriptTranslation } = loadSidepanelHelpers();
+  assert.equal(needsTranscriptTranslation("original", "original", true), false);
+  assert.equal(needsTranscriptTranslation("bilingual", "original", true), true);
+  assert.equal(needsTranscriptTranslation("original", "zh", true), true);
+  assert.equal(needsTranscriptTranslation("original", "bilingual", false), false);
+});
+
+test("sidebar in Original keeps only source text even while translations arrive", () => {
+  const { renderTranscriptSegmentContent } = loadSidepanelHelpers();
+  const html = renderTranscriptSegmentContent(
+    { id: "segment-0-0", text: "Original English sentence." },
+    "original",
+    "\u4e2d\u6587\u8bd1\u6587\u3002",
+    "",
+  );
+  assert.match(html, /Original English sentence/);
+  assert.doesNotMatch(html, /\u4e2d\u6587\u8bd1\u6587/);
+});
+
+test("language bar is pinned in the header with separate sidebar and video groups", () => {
+  const html = read("sidepanel.html");
+  const js = read("sidepanel.js");
+  const header = html.slice(html.indexOf('<div class="header">'), html.indexOf('id="contentArea"'));
+  assert.match(header, /id="languageBar"/);
+  assert.match(header, /data-transcript-mode="bilingual"/);
+  for (const mode of ["off", "original", "zh", "bilingual"]) {
+    assert.match(header, new RegExp(`data-video-subtitle-mode="${mode}"`));
+  }
+  assert.doesNotMatch(html, /id="toggleSubtitlesBtn"/);
+  assert.match(js, /buildVideoSubtitlePayload\(\s*segments,\s*currentVideoSubtitleMode,/);
+});
+
+test("save to Wiki sends sentence segments of original text with a canonical source", () => {
+  const { buildWikiLandingRequest } = loadSidepanelHelpers();
+  const request = buildWikiLandingRequest({
+    wiki: "个人运转 Wiki",
+    author: "  Andrew Huberman ",
+    title: " Episode ",
+    videoId: "Gk2ArbsrZwE",
+    segments: [
+      { id: "a", start: 12.7, text: "First  sentence." },
+      { id: "b", start: 20, text: "   " },
+    ],
+  });
+  assert.equal(request.action, "land");
+  assert.equal(request.author, "Andrew Huberman");
+  assert.equal(request.title, "Episode");
+  assert.equal(request.source, "https://www.youtube.com/watch?v=Gk2ArbsrZwE");
+  assert.equal(JSON.stringify(request.segments), JSON.stringify([{ start: 12, text: "First sentence." }]));
+});
+
+test("save to Wiki reports landing, commit failure and duplicates plainly", () => {
+  const { describeWikiLandingResult } = loadSidepanelHelpers();
+  assert.deepEqual(
+    { ...describeWikiLandingResult({ ok: true, path: "W/2 - Source Material/A/T.md", commit: { ok: true, hash: "abc123" } }) },
+    { error: false, text: "已落盘：W/2 - Source Material/A/T.md；已提交 abc123" },
+  );
+  const commitFailed = describeWikiLandingResult({ ok: true, path: "p.md", commit: { ok: false, error: "index.lock" } });
+  assert.equal(commitFailed.error, true);
+  assert.match(commitFailed.text, /p\.md.*index\.lock/);
+  const duplicate = describeWikiLandingResult({ ok: false, error: "dup", existing: "old.md" });
+  assert.match(duplicate.text, /old\.md/);
+});
+
+test("vault host requests carry the configured vault and explain a missing host", async () => {
+  const sent = [];
+  const helpers = loadBackgroundHelpers({
+    settings: { obsidianVaultRoot: "D:/vault" },
+    sendNativeMessage: async (host, message) => {
+      sent.push({ host, message });
+      return { ok: true, wikis: ["W"] };
+    },
+  });
+  const result = await helpers.handleVaultHostRequest({ action: "listWikis", vaultRoot: "C:/evil" });
+  assert.equal(result.ok, true);
+  assert.equal(sent[0].host, "com.youtube_digest.vault");
+  assert.equal(sent[0].message.vaultRoot, "D:/vault");
+  assert.equal((await helpers.handleVaultHostRequest({ action: "deleteAll" })).ok, false);
+
+  const missing = loadBackgroundHelpers({
+    sendNativeMessage: async () => {
+      throw new Error("Specified native messaging host not found.");
+    },
+  });
+  const failure = await missing.handleVaultHostRequest({ action: "listWikis" });
+  assert.equal(failure.ok, false);
+  assert.match(failure.error, /install\.ps1/);
 });

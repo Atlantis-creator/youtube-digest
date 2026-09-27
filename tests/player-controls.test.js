@@ -8,9 +8,22 @@ function harness() {
   const elements = [];
   const events = {};
   const sent = [];
+  const observers = [];
   function element() {
+    const classes = new Set();
     const el = {
       children: [],
+      classList: {
+        add(name) {
+          classes.add(name);
+        },
+        remove(name) {
+          classes.delete(name);
+        },
+        contains(name) {
+          return classes.has(name);
+        },
+      },
       style: {
         setProperty(k, v) {
           this[k] = v;
@@ -95,6 +108,20 @@ function harness() {
     setTimeout() {},
     clearTimeout() {},
     clearInterval() {},
+    MutationObserver: class {
+      constructor(callback) {
+        this.callback = callback;
+        this.connected = false;
+        observers.push(this);
+      }
+      observe(target) {
+        this.target = target;
+        this.connected = true;
+      }
+      disconnect() {
+        this.connected = false;
+      }
+    },
     chrome: {
       runtime: {
         getURL: (p) => `chrome-extension://test/${p}`,
@@ -114,7 +141,20 @@ function harness() {
     fs.readFileSync(path.join(__dirname, "../content.js"), "utf8"),
     context,
   );
-  return { context, document, window, events, player, video, sent };
+  const notifyPlayerClassChange = () =>
+    observers
+      .filter((observer) => observer.connected && observer.target === player)
+      .forEach((observer) => observer.callback([]));
+  return {
+    context,
+    document,
+    window,
+    events,
+    player,
+    video,
+    sent,
+    notifyPlayerClassChange,
+  };
 }
 
 function sendSubtitles(h, mode = "original", videoId = "videoAAAAAA") {
@@ -261,4 +301,59 @@ test("narrow windows constrain the dock without destroying the preferred width",
   h.window.innerWidth = 1280;
   h.events.resize();
   assert.equal(h.document.getElementById('youtube-digest-panel').style.width, '600px');
+});
+
+test("player controls fade out together with YouTube's autohidden control bar", async () => {
+  const h = harness();
+  await h.context.openDigestPanel();
+  const controls = h.document.getElementById("youtube-digest-controls");
+  assert.equal(controls.style.opacity, "1");
+  h.player.classList.add("ytp-autohide");
+  h.notifyPlayerClassChange();
+  assert.equal(controls.style.opacity, "0");
+  assert.equal(controls.style.pointerEvents, "none");
+  h.player.classList.remove("ytp-autohide");
+  h.notifyPlayerClassChange();
+  assert.equal(controls.style.opacity, "1");
+  assert.equal(controls.style.pointerEvents, "auto");
+});
+
+test("new video stops observing the previous player's autohide state", async () => {
+  const h = harness();
+  await h.context.openDigestPanel();
+  const oldControls = h.document.getElementById("youtube-digest-controls");
+  h.window.location.href = "https://www.youtube.com/watch?v=videoBBBBBB";
+  h.events["yt-navigate-finish"]();
+  h.player.classList.add("ytp-autohide");
+  h.notifyPlayerClassChange();
+  assert.equal(oldControls.style.opacity, "1");
+});
+
+test("panel can set video subtitle visibility explicitly and is notified", () => {
+  const h = harness();
+  sendSubtitles(h);
+  let response;
+  h.events.message(
+    { action: "setPlayerSubtitlesVisible", visible: false },
+    {},
+    (value) => {
+      response = value;
+    },
+  );
+  assert.equal(response.visible, false);
+  assert.equal(
+    h.document.getElementById("youtube-digest-subtitle-overlay").style.display,
+    "none",
+  );
+  assert.equal(h.sent.at(-1).action, "subtitleVisibilityChanged");
+  assert.equal(h.sent.at(-1).visible, false);
+  h.events.message(
+    { action: "setPlayerSubtitlesVisible", visible: true },
+    {},
+    () => {},
+  );
+  assert.equal(
+    h.document.getElementById("youtube-digest-subtitle-overlay").style.display,
+    "block",
+  );
 });

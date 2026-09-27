@@ -44,6 +44,7 @@ let digestPanelWidthRevision = 0;
 let digestPanelResizeHandle = null;
 let digestPanelDragging = false;
 let digestPanelLayoutKey = "";
+let digestControlsAutohideObserver = null;
 
 function getDigestPanelWidthLimits() {
   const viewport = window.innerWidth;
@@ -189,7 +190,11 @@ async function openDigestPanel() {
 }
 
 function togglePlayerSubtitles() {
-  subtitlesVisible = !subtitlesVisible;
+  setPlayerSubtitlesVisible(!subtitlesVisible);
+}
+
+function setPlayerSubtitlesVisible(visible) {
+  subtitlesVisible = Boolean(visible);
   renderVideoSubtitles();
   updateDigestPlayerControls();
   chrome.runtime
@@ -209,7 +214,20 @@ function updateDigestPlayerControls() {
     controls = document.createElement("div");
     controls.id = "youtube-digest-controls";
     controls.style.cssText =
-      "position:absolute;right:12px;top:12px;z-index:2147483646;display:flex;gap:6px;";
+      "position:absolute;right:12px;top:12px;z-index:2147483646;display:flex;gap:6px;transition:opacity .25s;";
+    // YouTube marks the player with ytp-autohide when its own control bar
+    // fades out (idle playback, pointer left); follow that same rhythm.
+    digestControlsAutohideObserver?.disconnect();
+    digestControlsAutohideObserver = null;
+    if (typeof MutationObserver === "function") {
+      digestControlsAutohideObserver = new MutationObserver(() =>
+        syncDigestControlsAutohide(player, controls),
+      );
+      digestControlsAutohideObserver.observe(player, {
+        attributes: true,
+        attributeFilter: ["class"],
+      });
+    }
     for (const [id, handler] of [
       [
         "youtube-digest-panel-toggle",
@@ -250,6 +268,13 @@ function updateDigestPlayerControls() {
   );
   subtitleButton.textContent = subtitlesVisible ? "关闭字幕" : "显示字幕";
   subtitleButton.setAttribute("aria-pressed", String(subtitlesVisible));
+  syncDigestControlsAutohide(player, controls);
+}
+
+function syncDigestControlsAutohide(player, controls) {
+  const hidden = Boolean(player.classList?.contains("ytp-autohide"));
+  controls.style.opacity = hidden ? "0" : "1";
+  controls.style.pointerEvents = hidden ? "none" : "auto";
 }
 
 document.addEventListener("fullscreenchange", updateDigestPanelVisibility);
@@ -381,6 +406,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.action === "togglePlayerSubtitles") {
     togglePlayerSubtitles();
+    sendResponse({ visible: subtitlesVisible });
+    return false;
+  }
+  if (message.action === "setPlayerSubtitlesVisible") {
+    setPlayerSubtitlesVisible(message.visible);
     sendResponse({ visible: subtitlesVisible });
     return false;
   }
@@ -1258,6 +1288,8 @@ document.addEventListener("yt-navigate-finish", () => {
   videoSubtitleState = { enabled: false, mode: "original", segments: [] };
   detachVideoSubtitleVideo();
   document.getElementById("youtube-digest-subtitle-overlay")?.remove();
+  digestControlsAutohideObserver?.disconnect();
+  digestControlsAutohideObserver = null;
   document.getElementById("youtube-digest-controls")?.remove();
   updateDigestPanelVisibility();
 

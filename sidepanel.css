@@ -152,6 +152,26 @@ body {
    so the only thing in this strip is the muted labels + one terracotta pill.
    That keeps the menu visually separate from the content area below it.
    ============================================================ */
+/* Pinned language bar — stays in the header so switching never needs a
+   scroll back to the top of the transcript. */
+.language-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 12px;
+}
+
+.language-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.language-label {
+  color: var(--text-muted);
+  font: 600 10.5px/1.3 var(--font-body);
+}
+
 .tabs {
   display: flex;
   gap: 4px;
@@ -688,6 +708,59 @@ body {
   color: inherit;
   cursor: pointer;
   font: 600 10px/1.4 var(--font-body);
+}
+
+/* Platform caption import confirmation */
+.wiki-landing {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-raised);
+}
+
+.wiki-landing[hidden],
+.wiki-landing-status[hidden] {
+  display: none;
+}
+
+.wiki-landing-field {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font: 600 11px/1.3 var(--font-body);
+}
+
+.wiki-landing-field select,
+.wiki-landing-field input {
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border-heavy);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: 12px/1.4 var(--font-body);
+}
+
+.wiki-landing-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.wiki-landing-status {
+  margin: 0 0 14px;
+  color: var(--text-secondary);
+  font: 11.5px/1.5 var(--font-body);
+  overflow-wrap: anywhere;
+}
+
+.wiki-landing-status.error {
+  color: var(--accent-hover);
 }
 
 @media (max-width: 390px) {

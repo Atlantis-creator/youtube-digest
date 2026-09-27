@@ -68,6 +68,7 @@ YouTube Digest uses Chrome permissions for these purposes:
 - `storage`: store settings, keys, notes, and cached results locally.
 - `tabs`: identify and interact with the YouTube tab containing each panel.
 - `scripting`: coordinate the extension's YouTube page controls.
+- `nativeMessaging`: when you click Save to Wiki, send the current video's title, channel, URL, and original subtitles to the local landing host on your computer, which writes one Markdown file into your Obsidian vault and commits it with Git. Nothing is sent over the network for this.
 - YouTube host access: read the video's URL and metadata, embed the panel, and provide timestamp and subtitle controls. Only YouTube pages can embed the panel.
 - Supadata host access: retrieve transcripts.
 - DeepSeek host access: provide AI overviews, explanations, translation, and note polishing through DeepSeek V4 Flash.

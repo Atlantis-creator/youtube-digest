@@ -19,14 +19,6 @@
         >
           隐藏侧栏
         </button>
-        <button
-          class="settings-btn"
-          id="toggleSubtitlesBtn"
-          type="button"
-          aria-pressed="true"
-        >
-          关闭字幕
-        </button>
         <!-- Video info -->
         <div class="video-info" id="videoInfo" style="display: none">
           <div class="video-title" id="videoTitle"></div>
@@ -41,6 +33,77 @@
         >
           Settings
         </button>
+      </div>
+
+      <!-- Pinned language bar: sidebar and video subtitles choose independently -->
+      <div class="language-bar" id="languageBar" style="display: none">
+        <div class="language-row">
+          <span class="language-label">侧栏</span>
+          <div
+            class="transcript-mode-control"
+            id="transcriptModeControl"
+            role="group"
+            aria-label="Sidebar transcript language"
+          >
+            <button
+              class="transcript-mode-btn active"
+              type="button"
+              data-transcript-mode="original"
+              aria-pressed="true"
+            >Original</button>
+            <button
+              class="transcript-mode-btn"
+              type="button"
+              data-transcript-mode="zh"
+              aria-pressed="false"
+            >中文</button>
+            <button
+              class="transcript-mode-btn"
+              type="button"
+              data-transcript-mode="bilingual"
+              aria-pressed="false"
+            >双语</button>
+          </div>
+          <span
+            class="translation-spinner"
+            id="langSpinner"
+            aria-label="Translating"
+          ></span>
+        </div>
+        <div class="language-row">
+          <span class="language-label">画面</span>
+          <div
+            class="transcript-mode-control"
+            id="videoSubtitleModeControl"
+            role="group"
+            aria-label="Video subtitle language"
+          >
+            <button
+              class="transcript-mode-btn"
+              type="button"
+              data-video-subtitle-mode="off"
+              aria-pressed="false"
+            >关</button>
+            <button
+              class="transcript-mode-btn active"
+              type="button"
+              data-video-subtitle-mode="original"
+              aria-pressed="true"
+            >原文</button>
+            <button
+              class="transcript-mode-btn"
+              type="button"
+              data-video-subtitle-mode="zh"
+              aria-pressed="false"
+            >中文</button>
+            <button
+              class="transcript-mode-btn"
+              type="button"
+              data-video-subtitle-mode="bilingual"
+              aria-pressed="false"
+            >双语</button>
+          </div>
+        </div>
       </div>
 
       <!-- Tab navigation -->
@@ -96,44 +159,41 @@
                 <div class="section-title-wrap">
                   <div class="section-title">Full Transcript</div>
                 </div>
-                <div
-                  class="transcript-mode-control"
-                  id="transcriptModeControl"
-                  role="group"
-                  aria-label="Transcript language"
-                >
-                  <button
-                    class="transcript-mode-btn active"
-                    type="button"
-                    data-transcript-mode="original"
-                    aria-pressed="true"
-                  >Original</button>
-                  <button
-                    class="transcript-mode-btn"
-                    type="button"
-                    data-transcript-mode="zh"
-                    aria-pressed="false"
-                  >中文</button>
-                  <button
-                    class="transcript-mode-btn"
-                    type="button"
-                    data-transcript-mode="bilingual"
-                    aria-pressed="false"
-                  >双语</button>
-                  <span
-                    class="translation-spinner"
-                    id="langSpinner"
-                    aria-label="Translating"
-                  ></span>
-                </div>
               </div>
               <div class="transcript-actions">
                 <button class="enhance-btn" id="copyTranscriptBtn">Copy</button>
                 <button class="enhance-btn" id="exportTranscriptBtn">
                   Export
                 </button>
+                <button class="enhance-btn" id="landToWikiBtn" type="button">
+                  存到 Wiki
+                </button>
               </div>
             </div>
+            <!-- Platform caption import: confirm target Wiki, author, title -->
+            <form class="wiki-landing" id="wikiLandingPanel" hidden>
+              <label class="wiki-landing-field">
+                <span>Wiki</span>
+                <select id="wikiLandingWiki" required></select>
+              </label>
+              <label class="wiki-landing-field">
+                <span>作者</span>
+                <input id="wikiLandingAuthor" type="text" required />
+              </label>
+              <label class="wiki-landing-field">
+                <span>标题</span>
+                <input id="wikiLandingTitle" type="text" required />
+              </label>
+              <div class="wiki-landing-actions">
+                <button class="enhance-btn active" id="wikiLandingConfirm" type="submit">
+                  确认落盘
+                </button>
+                <button class="enhance-btn" id="wikiLandingCancel" type="button">
+                  取消
+                </button>
+              </div>
+            </form>
+            <div class="wiki-landing-status" id="wikiLandingStatus" role="status" hidden></div>
             <div id="transcriptList"></div>
           </div>
         </div>

@@ -38,6 +38,41 @@ async function getSettings() {
 
 const promptFileCache = new Map();
 
+// ============================================================
+// VAULT LANDING (platform caption import via native messaging)
+// ============================================================
+
+const VAULT_HOST_NAME = "com.youtube_digest.vault";
+const VAULT_HOST_ACTIONS = new Set(["listWikis", "land"]);
+
+/**
+ * Forwards one request to the local landing host (native-host/), which Chrome
+ * starts on demand. The configured vault path is attached here so the panel
+ * never decides where files go.
+ */
+async function handleVaultHostRequest(request) {
+  if (!VAULT_HOST_ACTIONS.has(request?.action)) {
+    return { ok: false, error: "Unsupported vault request." };
+  }
+  const settings = await getSettings();
+  try {
+    return await chrome.runtime.sendNativeMessage(VAULT_HOST_NAME, {
+      ...request,
+      vaultRoot: settings.obsidianVaultRoot,
+    });
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (/not found|forbidden/i.test(message)) {
+      return {
+        ok: false,
+        error:
+          "本地落盘程序未安装或未授权：请运行 native-host/install.ps1 并传入本扩展的 ID。",
+      };
+    }
+    return { ok: false, error: `本地落盘程序出错：${message}` };
+  }
+}
+
 async function loadPromptSection(fileName, heading, variables = {}) {
   let markdown = promptFileCache.get(fileName);
   if (!markdown) {
@@ -364,6 +399,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }),
       )
       .catch((error) => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (message.action === "vaultHost") {
+    // Only extension pages (the embedded panel) may write into the vault.
+    if (!String(sender.url || "").startsWith(chrome.runtime.getURL(""))) {
+      sendResponse({ ok: false, error: "Unsupported sender." });
+      return false;
+    }
+    handleVaultHostRequest(message.request).then(sendResponse);
     return true;
   }
 
@@ -1583,4 +1628,5 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   validateTranscriptBatchRequest,
   normalizeTranslatedSegmentBatch,
   handleTranslateContent,
+  handleVaultHostRequest,
 };

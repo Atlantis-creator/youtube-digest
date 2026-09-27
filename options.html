@@ -74,6 +74,25 @@
         </section>
 
         <section class="card">
+          <h2 data-i18n="obsidianSection">Obsidian Wiki</h2>
+          <label for="obsidianVaultRoot" data-i18n="obsidianVaultRootLabel"
+            >Obsidian vault path</label
+          >
+          <input
+            id="obsidianVaultRoot"
+            name="obsidianVaultRoot"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="D:/path/to/vault"
+          />
+          <p class="help" data-i18n="obsidianVaultRootHelp">
+            Used by Save to Wiki. Leave empty to use the vault set when the
+            local landing host was installed.
+          </p>
+        </section>
+
+        <section class="card">
           <h2 data-i18n="aiProvider">AI provider</h2>
           <div
             class="provider-summary"

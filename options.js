@@ -16,6 +16,10 @@ const YTD_OPTIONS = (() => {
       supadataLink: "Create a Supadata account and key",
       supadataHelpSuffix:
         ". Supadata generates the key during onboarding.",
+      obsidianSection: "Obsidian Wiki",
+      obsidianVaultRootLabel: "Obsidian vault path",
+      obsidianVaultRootHelp:
+        "Used by Save to Wiki. Leave empty to use the vault set when the local landing host was installed.",
       aiProvider: "AI provider",
       providerSummaryLabel: "Supported AI provider",
       providerBadge: "Supported in this version",
@@ -85,6 +89,10 @@ const YTD_OPTIONS = (() => {
       supadataHelp: "用于获取带时间戳的 YouTube 字幕。",
       supadataLink: "创建 Supadata 账号并获取密钥",
       supadataHelpSuffix: "。Supadata 会在引导流程中生成密钥。",
+      obsidianSection: "Obsidian Wiki",
+      obsidianVaultRootLabel: "Obsidian vault 路径",
+      obsidianVaultRootHelp:
+        "「存到 Wiki」写入的 vault。留空则使用安装本地落盘程序时设定的路径。",
       aiProvider: "AI 服务",
       providerSummaryLabel: "支持的 AI 服务",
       providerBadge: "当前版本支持",
@@ -350,6 +358,7 @@ const YTD_OPTIONS = (() => {
     const form = doc.getElementById("settingsForm");
     const aiApiKeyInput = doc.getElementById("aiApiKey");
     const supadataApiKeyInput = doc.getElementById("supadataApiKey");
+    const obsidianVaultRootInput = doc.getElementById("obsidianVaultRoot");
     const customizationPrompt = doc.getElementById("customizationPrompt");
     const copyCustomizationPromptBtn = doc.getElementById(
       "copyCustomizationPromptBtn",
@@ -422,6 +431,8 @@ const YTD_OPTIONS = (() => {
 
         aiApiKeyInput.value = settings.aiApiKey;
         supadataApiKeyInput.value = settings.supadataApiKey;
+        if (obsidianVaultRootInput)
+          obsidianVaultRootInput.value = settings.obsidianVaultRoot;
         if (migration.migrated) {
           await storage.set({ [settingsApi.STORAGE_KEY]: settings });
           setStatus(saveStatus, "migrationWarning");
@@ -447,6 +458,7 @@ const YTD_OPTIONS = (() => {
       const settings = settingsApi.normalize({
         aiApiKey: aiApiKeyInput.value,
         supadataApiKey: supadataApiKeyInput.value,
+        obsidianVaultRoot: obsidianVaultRootInput?.value,
       });
 
       if (!settings.supadataApiKey) {

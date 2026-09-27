@@ -91,12 +91,26 @@ Keys and settings are stored in Chrome's local extension storage on your device.
 
 1. Open a standard YouTube watch page with captions.
 2. Click the YouTube Digest extension icon to open the side panel.
-3. Read the timestamped transcript, or choose **Original**, **中文**, or **双语**.
+3. Read the timestamped transcript. The pinned language bar has two groups: **侧栏** (sidebar) picks Original, 中文, or 双语; **画面** (video) picks off, original, Chinese, or bilingual. They are independent.
 4. Open **Overview** when you want AI-generated chapters and key quotes.
 5. Select transcript text when you want an AI explanation.
 6. Save a note from the player or a key quote, then revisit it from **Notes**.
 
-Original subtitles appear on the video by default after the transcript loads. Use **关闭字幕** (hide subtitles) or **显示字幕** (show subtitles) on the player or panel to change visibility independently of the language mode. A new video starts with subtitles visible again.
+Original subtitles appear on the video by default after the transcript loads, and the video subtitle language is remembered across videos. Use **关闭字幕** (hide subtitles) or **显示字幕** (show subtitles) on the player, or **画面: 关** in the language bar, to change visibility. A new video starts with subtitles visible again. Switching a language keeps the panel on the line being played (or the line you were reading), so there is no need to press Follow playback.
+
+The player's **隐藏侧栏** and **关闭字幕** buttons fade out together with YouTube's own controls while the video plays and come back when you move the pointer or pause.
+
+### Save to an Obsidian Wiki
+
+Click **存到 Wiki** (save to Wiki) above the transcript, confirm the target Wiki, author (the channel by default), and title, and the original subtitles are written sentence by sentence to `<Wiki>/2 - Source Material/<author>/<title>.md`. The frontmatter holds only `title`, `source`, and `author`; Chinese translations are not written. The whole Wiki is checked for the same video first, and only that one file is committed to Git afterwards (never pushed).
+
+This needs a one-time install of the local landing host (Python 3 required):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File native-host\install.ps1 -ExtensionId <extension ID> -VaultRoot <vault path>
+```
+
+The extension ID is shown on `chrome://extensions` with Developer mode on. A vault path entered on the Settings page takes precedence.
 
 Use **隐藏侧栏** to collapse the panel while keeping subtitles, translation, and your reading position. Use **展开侧栏** on the player to restore it. Fullscreen temporarily hides the panel; leaving fullscreen restores it only if it was visible before. Expanding the panel from fullscreen exits fullscreen first.
 
