@@ -703,6 +703,10 @@ test("language bar is pinned in the header with separate sidebar and video group
     assert.match(header, new RegExp(`data-video-subtitle-mode="${mode}"`));
   }
   assert.doesNotMatch(html, /id="toggleSubtitlesBtn"/);
+  // Save to Wiki stays reachable while the transcript scrolls.
+  assert.match(header, /id="landToWikiBtn"/);
+  assert.match(header, /id="wikiLandingPanel"/);
+  assert.match(header, /id="wikiLandingStatus"/);
   assert.match(js, /buildVideoSubtitlePayload\(\s*segments,\s*currentVideoSubtitleMode,/);
 });
 
