@@ -129,7 +129,7 @@ class LandTest(VaultCase):
         self.assertTrue((self.root / result['path']).is_file())
 
 
-class CommitTest(VaultCase):
+class GitVaultCase(VaultCase):
     def setUp(self):
         super().setUp()
         git(self.root, 'init', '-q')
@@ -139,6 +139,8 @@ class CommitTest(VaultCase):
         (self.root / 'staged.md').write_text('staged', encoding='utf-8')
         git(self.root, 'add', 'staged.md')
 
+
+class CommitTest(GitVaultCase):
     def test_reuses_existing_author_dir_regardless_of_case(self):
         (self.root / '个人运转 Wiki' / SM / 'andrew huberman').mkdir()
         result = host.handle(self.request())
@@ -159,6 +161,94 @@ class CommitTest(VaultCase):
         status = git(self.root, 'status', '--porcelain')
         self.assertIn('A  staged.md', status)
         self.assertIn('?? draft.md', status)
+
+
+FAKE_STORE = '''
+import json, sys
+from pathlib import Path
+args = dict(zip(sys.argv[2::2], sys.argv[3::2]))
+payload = json.loads(Path(args['--payload']).read_text(encoding='utf-8'))
+root = Path(args['--vault-root'])
+(root / 'store-call.json').write_text(json.dumps({'argv': sys.argv[1:], 'payload': payload}), encoding='utf-8')
+if payload['entry'] == 'bad':
+    print(json.dumps({'error': 'invalid-payload', 'message': 'nope'}), file=sys.stderr)
+    sys.exit(2)
+(root / 'word').mkdir(exist_ok=True)
+(root / 'word' / (payload['entry'] + '.md')).write_text('# ' + payload['entry'], encoding='utf-8')
+source = root / args['--source']
+source.write_text(source.read_text(encoding='utf-8') + '\\n## 查询词条\\n', encoding='utf-8')
+action = 'deduplicated' if payload['entry'] == 'dup' else 'created'
+print(json.dumps({'action': action, 'entry_path': 'word/' + payload['entry'] + '.md',
+                  'source_path': args['--source'], 'occurrence_id': 'O1', 'state': '快查'}))
+'''
+
+VIDEO = 'https://www.youtube.com/watch?v=Gk2ArbsrZwE'
+
+
+class AddWordTest(GitVaultCase):
+    def setUp(self):
+        super().setUp()
+        self.store = self.root / 'store.py'
+        self.store.write_text(FAKE_STORE, encoding='utf-8')
+        self.note = self.root / '瞄准 Wiki' / SM / 'talk.md'
+        self.note.write_text(f'---\ntitle: Talk\nsource: {VIDEO}\n---\n## Transcript\n', encoding='utf-8')
+        git(self.root, 'add', 'store.py', self.note.relative_to(self.root).as_posix())
+        git(self.root, 'commit', '-q', '-m', 'init', '--', 'store.py', self.note.relative_to(self.root).as_posix())
+
+    def add(self, entry='run', **overrides):
+        request = {
+            'action': 'addWord', 'vaultRoot': str(self.root), 'storeScript': str(self.store),
+            'source': 'https://youtu.be/Gk2ArbsrZwE', 'date': '2026-09-28',
+            'payload': {'entry': entry, 'query_form': 'running', 'source_domain': 'general',
+                        'source_topic': 'AI 主题', 'occurrence': {'sentence': 'It is **running**.'},
+                        'analysis': {}},
+        }
+        request.update(overrides)
+        return host.handle(request)
+
+    def store_call(self):
+        return json.loads((self.root / 'store-call.json').read_text(encoding='utf-8'))
+
+    def test_find_source_searches_every_wiki(self):
+        result = host.handle({'action': 'findSource', 'vaultRoot': str(self.root), 'source': VIDEO})
+        self.assertEqual(result, {'ok': True, 'landed': True, 'path': self.note.relative_to(self.root).as_posix()})
+        missing = host.handle({'action': 'findSource', 'vaultRoot': str(self.root),
+                               'source': 'https://www.youtube.com/watch?v=OTHERvideo1'})
+        self.assertEqual(missing, {'ok': True, 'landed': False})
+
+    def test_records_lookup_and_commits_entry_with_transcript(self):
+        result = self.add()
+        self.assertTrue(result['ok'], result)
+        self.assertEqual((result['entryPath'], result['occurrenceId'], result['state']), ('word/run.md', 'O1', '快查'))
+        self.assertTrue(result['commit']['ok'], result)
+        call = self.store_call()
+        self.assertEqual(call['argv'][0], 'record-lookup')
+        self.assertIn(self.note.relative_to(self.root).as_posix(), call['argv'])
+        self.assertEqual(call['payload']['source_topic'], 'AI 主题')
+        subject = git(self.root, 'log', '-1', '--format=%s').strip()
+        self.assertEqual(subject, '查词：run ← talk')
+        files = git(self.root, '-c', 'core.quotepath=false', 'show', '--name-only', '--format=').split('\n')
+        self.assertEqual(sorted(f for f in files if f), sorted(['word/run.md', self.note.relative_to(self.root).as_posix()]))
+        self.assertIn('A  staged.md', git(self.root, 'status', '--porcelain'))
+
+    def test_reuses_saved_domain_and_topic(self):
+        self.note.write_text(f'---\ntitle: Talk\nsource: {VIDEO}\nsource_domain: software-engineering\n'
+                             'source_topic: "React: 渲染"\n---\n', encoding='utf-8')
+        self.assertTrue(self.add()['ok'])
+        payload = self.store_call()['payload']
+        self.assertEqual((payload['source_domain'], payload['source_topic']), ('software-engineering', 'React: 渲染'))
+
+    def test_deduplicated_lookup_does_not_commit(self):
+        head = git(self.root, 'rev-parse', 'HEAD')
+        result = self.add('dup')
+        self.assertEqual((result['action'], result['commit']), ('deduplicated', None))
+        self.assertEqual(git(self.root, 'rev-parse', 'HEAD'), head)
+
+    def test_store_errors_and_missing_prerequisites_are_reported(self):
+        self.assertIn('nope', self.add('bad')['error'])
+        self.assertIn('还没存到 Wiki', self.add(source='https://www.youtube.com/watch?v=OTHERvideo1')['error'])
+        self.assertIn('找不到', self.add(storeScript=str(self.root / 'missing.py'))['error'])
+        self.assertFalse(self.add(date='')['ok'])
 
 
 class ProtocolTest(unittest.TestCase):

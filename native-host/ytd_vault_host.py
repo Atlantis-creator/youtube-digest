@@ -1,17 +1,20 @@
 """YouTube Digest native messaging host: land platform captions in an Obsidian Wiki.
 
 Chrome starts this script on demand (see install.ps1), sends one JSON request,
-and reads one JSON response. It writes exactly one Source Material note per the
-for_obsidian Knowledge System contract, then commits only that file.
+and reads one JSON response. `land` writes exactly one Source Material note per
+the for_obsidian Knowledge System contract, then commits only that file;
+`addWord` records one lookup in word/ through danzi-skill's store script.
 """
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import struct
 import subprocess
 import sys
+import tempfile
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 SOURCE_MATERIAL = '2 - Source Material'
@@ -170,11 +173,15 @@ def run_git(root, *args):
 
 
 def commit_note(root, relative, message):
+    return commit_paths(root, [relative], message)
+
+
+def commit_paths(root, relatives, message):
     try:
         top = run_git(root, 'rev-parse', '--show-toplevel')
         if top.returncode != 0:
             return {'ok': False, 'error': 'vault 不是 Git 仓库。'}
-        for args in (('add', '--', relative), ('commit', '-q', '-m', message, '--only', '--', relative)):
+        for args in (('add', '--', *relatives), ('commit', '-q', '-m', message, '--only', '--', *relatives)):
             result = run_git(root, *args)
             if result.returncode != 0:
                 return {'ok': False, 'error': (result.stderr or result.stdout).strip() or f'git {args[0]} 失败'}
@@ -220,6 +227,97 @@ def land(request):
     return {'ok': True, 'path': relative, 'commit': commit}
 
 
+# ---------------------------------------------------------------- word list
+# Entries follow for_obsidian/word/DESIGN.md; danzi-skill's vocabulary_store.py
+# owns that format, so this host only finds the transcript and calls it (ADR 0003).
+
+DEFAULT_STORE = Path('.claude/skills/danzi-skill/scripts/vocabulary_store.py')
+PROFILE_LINE = re.compile(r'^(source_domain|source_topic):\s*(.+?)\s*$', re.M)
+
+
+def find_landed(root, source):
+    key = source_key(source)
+    for wiki in find_wikis(root):
+        note = find_duplicate(root / wiki, key)
+        if note:
+            return note
+    return None
+
+
+def source_profile(note):
+    """The transcript's saved domain and topic; later lookups reuse them."""
+    text = note.read_text(encoding='utf-8', errors='replace')
+    if not text.startswith('---'):
+        return {}
+    profile = {}
+    for name, value in PROFILE_LINE.findall(text.split('\n---', 1)[0]):
+        if value.startswith('"'):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                pass
+        profile[name] = value.strip('\'"') if isinstance(value, str) else value
+    return profile
+
+
+def find_source(request):
+    root = vault_root(request)
+    note = find_landed(root, str(request.get('source') or ''))
+    if not note:
+        return {'ok': True, 'landed': False}
+    return {'ok': True, 'landed': True, 'path': note.relative_to(root).as_posix()}
+
+
+def run_store(script, *args):
+    env = {**os.environ, 'PYTHONUTF8': '1'}
+    result = subprocess.run([sys.executable, str(script), *args], capture_output=True, text=True,
+                            encoding='utf-8', errors='replace', timeout=60, env=env,
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    try:
+        output = json.loads(result.stdout if result.returncode == 0 else result.stderr)
+    except ValueError:
+        output = {'message': (result.stderr or result.stdout).strip()}
+    if result.returncode != 0:
+        raise LandingError(f'词表脚本拒绝写入：{output.get("message") or "未知错误"}')
+    return output
+
+
+def add_word(request):
+    root = vault_root(request)
+    note = find_landed(root, str(request.get('source') or ''))
+    if not note:
+        raise LandingError('这个视频还没存到 Wiki。')
+    payload = request.get('payload')
+    if not isinstance(payload, dict):
+        raise LandingError('缺少查词内容。')
+    script = Path(str(request.get('storeScript') or '').strip() or root / DEFAULT_STORE)
+    if not script.is_file():
+        raise LandingError(f'找不到 danzi 词表脚本：{script}')
+    date = str(request.get('date') or '')
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
+        raise LandingError('缺少查词日期。')
+
+    profile = source_profile(note)
+    if profile.get('source_domain') and profile.get('source_topic'):
+        payload = {**payload, **profile}
+    source_rel = note.relative_to(root).as_posix()
+    handle, payload_path = tempfile.mkstemp(suffix='.json')
+    try:
+        with os.fdopen(handle, 'w', encoding='utf-8') as stream:
+            json.dump(payload, stream, ensure_ascii=False)
+        result = run_store(script, 'record-lookup', '--vault-root', str(root), '--source', source_rel,
+                           '--payload', payload_path, '--date', date)
+    finally:
+        os.unlink(payload_path)
+
+    commit = None
+    if result.get('action') != 'deduplicated':
+        entry = Path(result['entry_path']).stem
+        commit = commit_paths(root, [result['entry_path'], source_rel], f'查词：{entry} ← {note.stem}')
+    return {'ok': True, 'action': result.get('action'), 'entryPath': result.get('entry_path'),
+            'occurrenceId': result.get('occurrence_id'), 'state': result.get('state'), 'commit': commit}
+
+
 def handle(request):
     try:
         action = request.get('action') if isinstance(request, dict) else None
@@ -228,11 +326,17 @@ def handle(request):
             return {'ok': True, 'wikis': find_wikis(root)}
         if action == 'land':
             return land(request)
+        if action == 'findSource':
+            return find_source(request)
+        if action == 'addWord':
+            return add_word(request)
         return {'ok': False, 'error': f'未知操作：{action}'}
     except LandingError as error:
         return {'ok': False, 'error': str(error)}
     except OSError as error:
         return {'ok': False, 'error': f'写入失败：{error}'}
+    except subprocess.SubprocessError as error:
+        return {'ok': False, 'error': f'词表脚本运行失败：{error}'}
 
 
 def main():
