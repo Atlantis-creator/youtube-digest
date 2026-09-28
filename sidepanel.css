@@ -1247,6 +1247,131 @@ body {
   background: var(--accent-dim);
 }
 
+.lookup {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-family: var(--font-reading);
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.lookup-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.lookup-meaning {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.lookup-pos,
+.lookup-label,
+.lookup-section-title {
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.lookup-en {
+  color: var(--text-secondary);
+}
+
+.lookup-row {
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  gap: 8px;
+}
+
+.lookup-section-title {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  letter-spacing: 0.5px;
+}
+
+.lookup-collocations {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.lookup-example {
+  padding: 8px 12px;
+  border-left: 2px solid var(--accent);
+  background: var(--surface-raised);
+}
+
+.lookup-zh {
+  color: var(--text-secondary);
+}
+
+.lookup-uncertain,
+.word-list-status.error {
+  color: var(--accent);
+}
+
+.lookup-uncertain {
+  font-family: var(--font-body);
+  font-size: 12px;
+}
+
+.word-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.word-list[hidden] {
+  display: none;
+}
+
+.word-list-entry {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-family: var(--font-body);
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+
+.word-list-btn {
+  padding: 7px 14px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  color: white;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+}
+
+.word-list-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.word-list-status {
+  flex-basis: 100%;
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.word-list-status:empty {
+  display: none;
+}
+
 /* ============================================================
    NOTES TAB
    ============================================================ */

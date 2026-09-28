@@ -112,6 +112,12 @@ powershell -ExecutionPolicy Bypass -File native-host\install.ps1 -ExtensionId <e
 
 The extension ID is shown on `chrome://extensions` with Developer mode on. A vault path entered on the Settings page takes precedence.
 
+### Word lookup and the word list
+
+Select one word or a phrase of up to four words in the original subtitles and click **Explain** for a lookup: the Chinese meaning in this context, the whole sentence in Chinese, part of speech, a plain English definition, and usage (common patterns, nuance, and an example in a new scene). Longer selections and selections in the Chinese translation keep the short explanation, plus one line of Chinese.
+
+With the local landing host installed and the current video already saved to a Wiki, **加入词表** (add to word list) appears under the lookup. The entry goes into the vault's `word/` folder in the format of `for_obsidian/word/DESIGN.md`, written by danzi-skill's `vocabulary_store.py`; the transcript gets a backlink, and both files are committed to Git together (never pushed). Usage stays in the popup and is not written to the entry; see `docs/adr/0004-lookup-fields.md`. The script defaults to danzi-skill inside the vault and can be changed on the Settings page.
+
 Use **隐藏侧栏** to collapse the panel while keeping subtitles, translation, and your reading position. Use **展开侧栏** on the player to restore it. Fullscreen temporarily hides the panel; leaving fullscreen restores it only if it was visible before. Expanding the panel from fullscreen exits fullscreen first.
 
 The page and player shrink to make room for the panel. Drag its left edge to resize it; the width is remembered when released. The focused edge also supports the left/right arrow keys. Narrow windows limit the panel width to keep room for the video.

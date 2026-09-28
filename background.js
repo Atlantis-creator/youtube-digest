@@ -43,12 +43,17 @@ const promptFileCache = new Map();
 // ============================================================
 
 const VAULT_HOST_NAME = "com.youtube_digest.vault";
-const VAULT_HOST_ACTIONS = new Set(["listWikis", "land"]);
+const VAULT_HOST_ACTIONS = new Set([
+  "listWikis",
+  "land",
+  "findSource",
+  "addWord",
+]);
 
 /**
  * Forwards one request to the local landing host (native-host/), which Chrome
- * starts on demand. The configured vault path is attached here so the panel
- * never decides where files go.
+ * starts on demand. The configured vault and word-list script paths are
+ * attached here so the panel never decides where files go.
  */
 async function handleVaultHostRequest(request) {
   if (!VAULT_HOST_ACTIONS.has(request?.action)) {
@@ -59,12 +64,14 @@ async function handleVaultHostRequest(request) {
     return await chrome.runtime.sendNativeMessage(VAULT_HOST_NAME, {
       ...request,
       vaultRoot: settings.obsidianVaultRoot,
+      storeScript: settings.danziStorePath,
     });
   } catch (error) {
     const message = String(error?.message || error);
     if (/not found|forbidden/i.test(message)) {
       return {
         ok: false,
+        unavailable: true,
         error:
           "本地落盘程序未安装或未授权：请运行 native-host/install.ps1 并传入本扩展的 ID。",
       };
@@ -80,7 +87,8 @@ async function loadPromptSection(fileName, heading, variables = {}) {
     if (!response.ok) {
       throw new Error(`Could not load prompt file: ${fileName}`);
     }
-    markdown = await response.text();
+    // Windows checkouts (core.autocrlf) turn prompt files into CRLF.
+    markdown = (await response.text()).replace(/\r\n/g, "\n");
     promptFileCache.set(fileName, markdown);
   }
 
@@ -335,6 +343,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       message.selectedText,
       message.transcriptContext,
       message.videoTitle,
+      message.occurrence,
     )
       .then(sendResponse)
       .catch((err) => sendResponse({ error: err.message }));
@@ -1056,19 +1065,6 @@ async function handleGetVideoInfo(tabId) {
 }
 
 // ============================================================
-// EXPLAIN SELECTION
-// ============================================================
-
-/**
- * Explains selected text using DeepSeek.
- * Provides context, definitions, and clarification for complex terms.
- *
- * @param {string} selectedText - The text the user selected
- * @param {string} transcriptContext - Surrounding transcript for context
- * @param {string} videoTitle - Video title for additional context
- * @returns {Object} - { success, explanation } or { success: false, error }
- */
-// ============================================================
 // NOTE MANAGEMENT
 // ============================================================
 
@@ -1353,10 +1349,71 @@ async function handleDeleteNote(noteId) {
   }
 }
 
+const LOOKUP_DOMAINS = new Set([
+  "general",
+  "software-engineering",
+  "product-design",
+  "business",
+  "science",
+]);
+
+/**
+ * Validates the model's 查词 JSON. Word-list fields must be present because
+ * danzi's store rejects incomplete payloads; usage fields are optional.
+ */
+function normalizeLookupResult(raw) {
+  const text = (value) => (typeof value === "string" ? value.trim() : "");
+  const lookup = {
+    entry: text(raw?.entry),
+    part_of_speech: text(raw?.part_of_speech),
+    meaning_zh: text(raw?.meaning_zh),
+    sentence_meaning_zh: text(raw?.sentence_meaning_zh),
+    definition_en: text(raw?.definition_en),
+    scene: text(raw?.scene),
+    source_domain: LOOKUP_DOMAINS.has(text(raw?.source_domain))
+      ? text(raw.source_domain)
+      : "general",
+    source_topic: text(raw?.source_topic),
+    collocations: (Array.isArray(raw?.collocations) ? raw.collocations : [])
+      .map(text)
+      .filter(Boolean)
+      .slice(0, 3),
+    register: text(raw?.register),
+    example: { en: text(raw?.example?.en), zh: text(raw?.example?.zh) },
+    confusable: text(raw?.confusable),
+    verification: "confirmed",
+    uncertainty: "",
+  };
+  const missing = [
+    "entry",
+    "part_of_speech",
+    "meaning_zh",
+    "sentence_meaning_zh",
+    "definition_en",
+    "scene",
+  ].filter((key) => !lookup[key]);
+  if (missing.length) {
+    throw new Error(`Lookup response is missing: ${missing.join(", ")}`);
+  }
+  if (!lookup.source_topic) lookup.source_topic = lookup.scene;
+  if (!lookup.example.en) lookup.example = null;
+  if (raw?.verification === "needs-verification") {
+    lookup.verification = "needs-verification";
+    lookup.uncertainty = text(raw?.uncertainty) || "模型对该用法把握不足";
+  }
+  return lookup;
+}
+
+/**
+ * Explains selected text using DeepSeek. With an `occurrence` (one short
+ * selection inside one original-caption sentence) it runs a 查词 and returns
+ * structured fields; otherwise a short explanation plus a Chinese line.
+ */
 async function handleExplainSelection(
   selectedText,
   transcriptContext,
   videoTitle,
+  occurrence,
 ) {
   try {
     const settings = await getSettings();
@@ -1368,31 +1425,40 @@ async function handleExplainSelection(
       };
     }
 
+    const isLookup = Boolean(occurrence?.sentence);
     const variables = {
       videoTitle: videoTitle || "Unknown",
       selectedText,
+      sentence: occurrence?.sentence || "",
       transcriptContext: transcriptContext || "None",
     };
     const systemPrompt = await loadPromptSection(
       "explain.md",
-      "System prompt",
+      isLookup ? "Lookup system prompt" : "System prompt",
       variables,
     );
     const userPrompt = await loadPromptSection(
       "explain.md",
-      "User prompt",
+      isLookup ? "Lookup user prompt" : "User prompt",
       variables,
     );
 
     debugLog("[YouTube Digest] Requesting selection explanation");
     const { text: explanation } = await requestAiCompletion({
-      maxTokens: 1024,
+      maxTokens: isLookup ? 1500 : 1024,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
+      ...(isLookup && { responseFormat: { type: "json_object" } }),
     });
 
+    if (isLookup) {
+      return {
+        success: true,
+        lookup: normalizeLookupResult(parseLooseJson(explanation)),
+      };
+    }
     return {
       success: true,
       explanation: explanation.trim(),
@@ -1629,4 +1695,6 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   normalizeTranslatedSegmentBatch,
   handleTranslateContent,
   handleVaultHostRequest,
+  handleExplainSelection,
+  normalizeLookupResult,
 };

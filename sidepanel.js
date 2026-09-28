@@ -1398,6 +1398,7 @@ function setupExplainFeature() {
   document.body.appendChild(tooltip);
 
   let selectedText = "";
+  let selectedOccurrence = null;
 
   // Interacting with Explain must preserve the transcript selection and stay
   // isolated from document/row click behavior.
@@ -1423,6 +1424,7 @@ function setupExplainFeature() {
     // Allow any selection length (removed 10+ char requirement)
     if (text.length > 0 && isInTranscript) {
       selectedText = text;
+      selectedOccurrence = getSelectionOccurrence(selection);
 
       // Position the tooltip near the selection
       const range = selection.getRangeAt(0);
@@ -1452,14 +1454,231 @@ function setupExplainFeature() {
       if (!selectedText) return;
 
       tooltip.style.display = "none";
-      await showExplanation(selectedText);
+      await showExplanation(selectedText, selectedOccurrence);
     });
+}
+
+// A 查词 is a short selection inside one original-caption sentence; the word
+// list (for_obsidian/word/DESIGN.md) only takes single words and phrases.
+const LOOKUP_MAX_WORDS = 4;
+
+/**
+ * Turns a character range inside one caption sentence into the queried form
+ * and the sentence with that one occurrence in bold. Returns null when the
+ * range is not a word or short phrase.
+ */
+function buildLookupOccurrence(sentence, start, end) {
+  const text = String(sentence || "");
+  let from = Math.max(0, start);
+  let to = Math.min(text.length, end);
+  // Drop edge spaces and punctuation so selecting "running," looks up "running".
+  while (from < to && !/[\p{L}\p{N}]/u.test(text[from])) from++;
+  while (to > from && !/[\p{L}\p{N}]/u.test(text[to - 1])) to--;
+  const queryForm = text.slice(from, to);
+  if (!/[A-Za-z]/.test(queryForm) || /[.!?;:,。！？；：，*]/.test(queryForm)) {
+    return null;
+  }
+  if (queryForm.split(/\s+/).length > LOOKUP_MAX_WORDS) return null;
+  return {
+    queryForm,
+    sentence: `${text.slice(0, from)}**${queryForm}**${text.slice(to)}`.trim(),
+  };
+}
+
+/**
+ * Reads the selection's exact position, so a word repeated in the transcript
+ * resolves to the occurrence the user actually selected. Selections in the
+ * Chinese translation or across rows are not lookups.
+ */
+function getSelectionOccurrence(selection) {
+  if (!selection?.rangeCount) return null;
+  const range = selection.getRangeAt(0);
+  const captionOf = (node) =>
+    (node?.nodeType === 1 ? node : node?.parentElement)?.closest(
+      ".transcript-text, .transcript-original",
+    );
+  const caption = captionOf(range.startContainer);
+  if (!caption || caption !== captionOf(range.endContainer)) return null;
+
+  const before = document.createRange();
+  before.selectNodeContents(caption);
+  before.setEnd(range.startContainer, range.startOffset);
+  const start = before.toString().length;
+  const occurrence = buildLookupOccurrence(
+    caption.textContent,
+    start,
+    start + range.toString().length,
+  );
+  if (!occurrence) return null;
+
+  const row = caption.closest(".transcript-entry");
+  const context = [row?.previousElementSibling, row, row?.nextElementSibling]
+    .map((entry) =>
+      entry?.querySelector(".transcript-text, .transcript-original"),
+    )
+    .filter(Boolean)
+    .map((element) => element.textContent.trim())
+    .join(" ");
+  return { ...occurrence, context };
+}
+
+function renderLookupHtml(lookup) {
+  const row = (label, value) =>
+    value
+      ? `<div class="lookup-row"><span class="lookup-label">${label}</span><span>${escapeHtml(value)}</span></div>`
+      : "";
+  const collocations = lookup.collocations.length
+    ? `<ul class="lookup-collocations">${lookup.collocations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : "";
+  const example = lookup.example
+    ? `<div class="lookup-example"><div>${escapeHtml(lookup.example.en)}</div><div class="lookup-zh">${escapeHtml(lookup.example.zh)}</div></div>`
+    : "";
+  const uncertain =
+    lookup.verification === "needs-verification"
+      ? `<div class="lookup-uncertain">待核查：${escapeHtml(lookup.uncertainty)}</div>`
+      : "";
+  return `
+    <div class="lookup">
+      <div class="lookup-head">
+        <span class="lookup-meaning">${escapeHtml(lookup.meaning_zh)}</span>
+        <span class="lookup-pos">${escapeHtml(lookup.part_of_speech)}</span>
+      </div>
+      ${uncertain}
+      <div class="lookup-en">${escapeHtml(lookup.definition_en)}</div>
+      ${row("整句", lookup.sentence_meaning_zh)}
+      ${row("场景", `${lookup.source_domain} / ${lookup.scene}`)}
+      <div class="lookup-section-title">用法</div>
+      ${collocations}
+      ${row("语感", lookup.register)}
+      ${example}
+      ${row("易混", lookup.confusable)}
+      <div class="word-list" id="wordListAction" hidden>
+        <input id="wordListEntry" class="word-list-entry" type="text" spellcheck="false" aria-label="词条" value="${escapeHtml(lookup.entry)}" />
+        <button id="wordListAdd" class="word-list-btn" type="button">加入词表</button>
+        <div class="word-list-status" id="wordListStatus"></div>
+      </div>
+    </div>`;
+}
+
+/**
+ * The word-list payload for danzi's record-lookup. Usage fields stay in the
+ * popup only (docs/adr/0004-lookup-fields.md).
+ */
+function buildWordListPayload(lookup, occurrence, entry) {
+  const analysis = {
+    scene: lookup.scene,
+    sentence_meaning_zh: lookup.sentence_meaning_zh,
+    meaning_zh: lookup.meaning_zh,
+    part_of_speech: lookup.part_of_speech,
+    definition_en: lookup.definition_en,
+    verification: lookup.verification,
+  };
+  if (lookup.verification === "needs-verification") {
+    analysis.uncertainty = lookup.uncertainty;
+  }
+  return {
+    entry: String(entry || "").trim(),
+    query_form: occurrence.queryForm,
+    source_domain: lookup.source_domain,
+    source_topic: lookup.source_topic,
+    occurrence: { sentence: occurrence.sentence },
+    analysis,
+  };
+}
+
+function describeWordListResult(result) {
+  if (!result?.ok) {
+    return { error: true, text: `未加入：${result?.error || "未知错误"}` };
+  }
+  const entry = String(result.entryPath || "")
+    .replace(/^word\//, "")
+    .replace(/\.md$/, "");
+  const id = result.occurrenceId ? `（${result.occurrenceId}）` : "";
+  let text =
+    result.action === "deduplicated"
+      ? `已在词表：${entry}${id}`
+      : `已加入 ${entry}${id}`;
+  if (result.state === "待核查") text += " · 待核查";
+  if (result.commit && !result.commit.ok) {
+    return {
+      error: true,
+      text: `${text}；提交失败：${result.commit.error || "未知原因"}`,
+    };
+  }
+  return { error: false, text };
+}
+
+function obsidianOpenUrl(vaultName, path) {
+  const file = String(path || "").replace(/\.md$/, "");
+  return `obsidian://open?vault=${encodeURIComponent(vaultName)}&file=${encodeURIComponent(file)}`;
+}
+
+function localDateString(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function sendVaultRequest(request) {
+  return chrome.runtime
+    .sendMessage({ action: "vaultHost", request })
+    .catch((error) => ({ ok: false, error: error.message }));
+}
+
+/**
+ * Shows 加入词表 under a finished 查词. Hidden without the local host; disabled
+ * until the video has been saved to a Wiki (docs/adr/0003).
+ */
+async function setupWordListAction(container, lookup, occurrence, sourceCheck) {
+  const section = container.querySelector("#wordListAction");
+  const button = container.querySelector("#wordListAdd");
+  const status = container.querySelector("#wordListStatus");
+  const entryInput = container.querySelector("#wordListEntry");
+  if (!section) return;
+  const source = await sourceCheck;
+  if (source?.unavailable) return;
+  section.hidden = false;
+  const setStatus = (text, isError = false) => {
+    status.textContent = text;
+    status.classList.toggle("error", isError);
+  };
+  if (!source?.ok || !source.landed) {
+    button.disabled = true;
+    setStatus(source?.ok ? "先存到 Wiki" : source?.error || "未知错误", !source?.ok);
+    return;
+  }
+  button.addEventListener("click", async () => {
+    const entry = entryInput.value.trim();
+    if (!entry) return;
+    button.disabled = true;
+    setStatus("正在加入…");
+    const result = await sendVaultRequest({
+      action: "addWord",
+      source: occurrence.source,
+      date: localDateString(),
+      payload: buildWordListPayload(lookup, occurrence, entry),
+    });
+    const described = describeWordListResult(result);
+    setStatus(described.text, described.error);
+    if (!result?.ok) {
+      button.disabled = false;
+      return;
+    }
+    if (result.vaultName && result.entryPath) {
+      const link = document.createElement("a");
+      link.className = "word-list-open";
+      link.href = obsidianOpenUrl(result.vaultName, result.entryPath);
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = "在 Obsidian 打开";
+      status.append(" ", link);
+    }
+  });
 }
 
 /**
  * Shows the explanation modal and fetches it from the configured AI provider.
  */
-async function showExplanation(selectedText) {
+async function showExplanation(selectedText, occurrence = null) {
   // Create modal
   const modal = document.createElement("div");
   modal.id = "explainModal";
@@ -1490,26 +1709,43 @@ async function showExplanation(selectedText) {
     if (e.target === modal) modal.remove();
   });
 
-  // Get some context around the selection from the transcript
-  const transcriptContext = getTranscriptContext(selectedText);
+  const contentDiv = modal.querySelector("#explanationContent");
+  const lookupOccurrence = occurrence && currentVideoId
+    ? {
+        ...occurrence,
+        source: `https://www.youtube.com/watch?v=${encodeURIComponent(currentVideoId)}`,
+      }
+    : null;
+  // Checked while the model answers, so 加入词表 is ready with the result.
+  const sourceCheck = lookupOccurrence
+    ? sendVaultRequest({ action: "findSource", source: lookupOccurrence.source })
+    : null;
 
   // Fetch explanation
   try {
     const result = await chrome.runtime.sendMessage({
       action: "explainSelection",
-      selectedText: selectedText,
-      transcriptContext: transcriptContext,
+      selectedText: lookupOccurrence?.queryForm || selectedText,
+      transcriptContext:
+        lookupOccurrence?.context || getTranscriptContext(selectedText),
       videoTitle: currentVideoTitle,
+      occurrence: lookupOccurrence && { sentence: lookupOccurrence.sentence },
     });
 
-    const contentDiv = document.getElementById("explanationContent");
-    if (result.success) {
+    if (result.success && result.lookup) {
+      contentDiv.innerHTML = renderLookupHtml(result.lookup);
+      await setupWordListAction(
+        contentDiv,
+        result.lookup,
+        lookupOccurrence,
+        sourceCheck,
+      );
+    } else if (result.success) {
       contentDiv.innerHTML = `<div class="explain-text">${escapeHtml(result.explanation).replace(/\n\n/g, "</p><p>").replace(/\n/g, "<br>")}</div>`;
     } else {
       contentDiv.innerHTML = `<div class="explain-error">Failed to get explanation: ${escapeHtml(result.error)}</div>`;
     }
   } catch (error) {
-    const contentDiv = document.getElementById("explanationContent");
     contentDiv.innerHTML = `<div class="explain-error">Error: ${escapeHtml(error.message)}</div>`;
   }
 }
@@ -2400,6 +2636,11 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   needsTranscriptTranslation,
   buildWikiLandingRequest,
   describeWikiLandingResult,
+  buildLookupOccurrence,
+  renderLookupHtml,
+  buildWordListPayload,
+  describeWordListResult,
+  obsidianOpenUrl,
   buildTranscriptExportContent,
   buildVideoSubtitlePayload,
 };
