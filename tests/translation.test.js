@@ -766,3 +766,162 @@ test("vault host requests carry the configured vault and explain a missing host"
   assert.equal(failure.ok, false);
   assert.match(failure.error, /install\.ps1/);
 });
+
+test("a lookup occurrence bolds only the selected word and rejects non-lookups", () => {
+  const { buildLookupOccurrence } = loadSidepanelHelpers();
+  const sentence = "It runs, and it keeps running.";
+  const second = sentence.lastIndexOf("running");
+  assert.deepEqual(
+    { ...buildLookupOccurrence(sentence, second - 1, second + 8) },
+    { queryForm: "running", sentence: "It runs, and it keeps **running**." },
+  );
+  assert.equal(buildLookupOccurrence("We run into it.", 3, 11).queryForm, "run into");
+  assert.equal(buildLookupOccurrence(sentence, 0, sentence.length), null);
+  assert.equal(buildLookupOccurrence("one two three four five", 0, 23), null);
+  assert.equal(buildLookupOccurrence("我们 走吧", 0, 2), null);
+});
+
+test("lookup rendering escapes model text and shows usage without saving it", () => {
+  const { renderLookupHtml, buildWordListPayload } = loadSidepanelHelpers();
+  const lookup = {
+    entry: "hint",
+    part_of_speech: "verb",
+    meaning_zh: "暗示<b>",
+    sentence_meaning_zh: "整句",
+    definition_en: "to suggest indirectly",
+    scene: "tool design",
+    source_domain: "software-engineering",
+    source_topic: "上下文工程",
+    collocations: ["hint at sth — 暗示某事"],
+    register: "比 suggest 更隐晦",
+    example: { en: "She hinted at a raise.", zh: "她暗示要加薪。" },
+    confusable: "",
+    verification: "needs-verification",
+    uncertainty: "术语用法",
+  };
+  const html = renderLookupHtml(lookup);
+  assert.match(html, /暗示&lt;b&gt;/);
+  assert.match(html, /hint at sth/);
+  assert.match(html, /待核查：术语用法/);
+  assert.doesNotMatch(html, /易混/);
+
+  const payload = buildWordListPayload(
+    lookup,
+    { queryForm: "hints", sentence: "It **hints** to Claude." },
+    " hint ",
+  );
+  assert.equal(payload.entry, "hint");
+  assert.equal(payload.query_form, "hints");
+  assert.equal(payload.analysis.uncertainty, "术语用法");
+  assert.deepEqual(Object.keys(payload.analysis).sort(), [
+    "definition_en",
+    "meaning_zh",
+    "part_of_speech",
+    "scene",
+    "sentence_meaning_zh",
+    "uncertainty",
+    "verification",
+  ]);
+});
+
+test("word list results read plainly and link to the entry in Obsidian", () => {
+  const { describeWordListResult, obsidianOpenUrl } = loadSidepanelHelpers();
+  const added = describeWordListResult({
+    ok: true,
+    action: "created",
+    entryPath: "word/run.md",
+    occurrenceId: "O1",
+    state: "待核查",
+    commit: { ok: true },
+  });
+  assert.deepEqual({ ...added }, { error: false, text: "已加入 run（O1） · 待核查" });
+  assert.equal(
+    describeWordListResult({ ok: true, action: "deduplicated", entryPath: "word/run.md", occurrenceId: "O2", commit: null }).text,
+    "已在词表：run（O2）",
+  );
+  assert.match(
+    describeWordListResult({ ok: true, entryPath: "word/run.md", commit: { ok: false, error: "lock" } }).text,
+    /提交失败：lock/,
+  );
+  assert.match(describeWordListResult({ ok: false, error: "还没存到 Wiki" }).text, /未加入：还没存到 Wiki/);
+  assert.equal(
+    obsidianOpenUrl("for_obsidian", "word/run into.md"),
+    "obsidian://open?vault=for_obsidian&file=word%2Frun%20into",
+  );
+});
+
+test("a lookup asks for JSON and keeps word-list fields valid", async () => {
+  const requests = [];
+  const content = JSON.stringify({
+    entry: "run",
+    part_of_speech: "verb",
+    meaning_zh: "运转",
+    sentence_meaning_zh: "引擎运转平稳。",
+    definition_en: "operating",
+    scene: "engine",
+    source_domain: "cooking",
+    source_topic: "",
+    collocations: ["a", "b", "c", "d"],
+    verification: "needs-verification",
+  });
+  const helpers = loadBackgroundHelpers({
+    fetchImpl: async (url, options) => {
+      if (String(url).includes("/prompts/")) {
+        return { ok: true, text: async () => read("prompts/explain.md") };
+      }
+      requests.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) };
+    },
+  });
+  const result = await helpers.handleExplainSelection("running", "ctx", "T", {
+    sentence: "The engine is **running** smoothly.",
+  });
+  assert.equal(result.success, true, result.error);
+  assert.deepEqual(requests[0].response_format, { type: "json_object" });
+  assert.match(requests[0].messages[1].content, /SENTENCE: The engine is \*\*running\*\* smoothly\./);
+  assert.equal(result.lookup.source_domain, "general");
+  assert.equal(result.lookup.source_topic, "engine");
+  assert.equal(result.lookup.collocations.length, 3);
+  assert.equal(result.lookup.example, null);
+  assert.match(result.lookup.uncertainty, /把握不足/);
+
+  assert.throws(() => helpers.normalizeLookupResult({ entry: "run" }), /missing/);
+});
+
+test("vault host requests carry the word-list script path", async () => {
+  const sent = [];
+  const helpers = loadBackgroundHelpers({
+    settings: { obsidianVaultRoot: "D:/vault", danziStorePath: "D:/store.py" },
+    sendNativeMessage: async (_host, message) => {
+      sent.push(message);
+      return { ok: true };
+    },
+  });
+  await helpers.handleVaultHostRequest({ action: "addWord", storeScript: "C:/evil.py" });
+  assert.equal(sent[0].storeScript, "D:/store.py");
+  assert.equal((await helpers.handleVaultHostRequest({ action: "findSource" })).ok, true);
+
+  const missing = loadBackgroundHelpers({
+    sendNativeMessage: async () => {
+      throw new Error("Specified native messaging host not found.");
+    },
+  });
+  assert.equal((await missing.handleVaultHostRequest({ action: "findSource" })).unavailable, true);
+});
+
+test("prompt sections load from CRLF checkouts", async () => {
+  const requests = [];
+  const helpers = loadBackgroundHelpers({
+    fetchImpl: async (url, options) => {
+      if (String(url).includes("/prompts/")) {
+        const text = read("prompts/explain.md").replace(/\r?\n/g, "\r\n");
+        return { ok: true, text: async () => text };
+      }
+      requests.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }] }) };
+    },
+  });
+  const result = await helpers.handleExplainSelection("a long claim here", "ctx", "T");
+  assert.equal(result.success, true, result.error);
+  assert.doesNotMatch(requests[0].messages[0].content, /\r/);
+});

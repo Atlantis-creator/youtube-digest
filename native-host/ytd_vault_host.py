@@ -315,7 +315,8 @@ def add_word(request):
         entry = Path(result['entry_path']).stem
         commit = commit_paths(root, [result['entry_path'], source_rel], f'查词：{entry} ← {note.stem}')
     return {'ok': True, 'action': result.get('action'), 'entryPath': result.get('entry_path'),
-            'occurrenceId': result.get('occurrence_id'), 'state': result.get('state'), 'commit': commit}
+            'occurrenceId': result.get('occurrence_id'), 'state': result.get('state'),
+            'vaultName': root.resolve().name, 'commit': commit}
 
 
 def handle(request):

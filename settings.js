@@ -14,6 +14,8 @@ var YTD_SETTINGS = (() => {
     supadataApiKey: "",
     // Empty means: use the vault the local landing host was installed with.
     obsidianVaultRoot: "",
+    // Empty means: <vault>/.claude/skills/danzi-skill/scripts/vocabulary_store.py.
+    danziStorePath: "",
   });
 
   function isLegacyCustom(input) {
@@ -37,6 +39,10 @@ var YTD_SETTINGS = (() => {
       obsidianVaultRoot:
         typeof input.obsidianVaultRoot === "string"
           ? input.obsidianVaultRoot.trim()
+          : "",
+      danziStorePath:
+        typeof input.danziStorePath === "string"
+          ? input.danziStorePath.trim()
           : "",
     };
   }

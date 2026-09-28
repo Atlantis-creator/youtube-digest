@@ -221,6 +221,7 @@ class AddWordTest(GitVaultCase):
         self.assertTrue(result['ok'], result)
         self.assertEqual((result['entryPath'], result['occurrenceId'], result['state']), ('word/run.md', 'O1', '快查'))
         self.assertTrue(result['commit']['ok'], result)
+        self.assertEqual(result['vaultName'], self.root.resolve().name)
         call = self.store_call()
         self.assertEqual(call['argv'][0], 'record-lookup')
         self.assertIn(self.note.relative_to(self.root).as_posix(), call['argv'])

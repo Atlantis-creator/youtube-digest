@@ -20,6 +20,9 @@ const YTD_OPTIONS = (() => {
       obsidianVaultRootLabel: "Obsidian vault path",
       obsidianVaultRootHelp:
         "Used by Save to Wiki. Leave empty to use the vault set when the local landing host was installed.",
+      danziStorePathLabel: "Word list script path",
+      danziStorePathHelp:
+        "Used by Add to word list. Leave empty to use danzi-skill inside the vault.",
       aiProvider: "AI provider",
       providerSummaryLabel: "Supported AI provider",
       providerBadge: "Supported in this version",
@@ -93,6 +96,9 @@ const YTD_OPTIONS = (() => {
       obsidianVaultRootLabel: "Obsidian vault 路径",
       obsidianVaultRootHelp:
         "「存到 Wiki」写入的 vault。留空则使用安装本地落盘程序时设定的路径。",
+      danziStorePathLabel: "词表脚本路径",
+      danziStorePathHelp:
+        "「加入词表」调用的 danzi 脚本。留空则使用 vault 内的 danzi-skill。",
       aiProvider: "AI 服务",
       providerSummaryLabel: "支持的 AI 服务",
       providerBadge: "当前版本支持",
@@ -359,6 +365,7 @@ const YTD_OPTIONS = (() => {
     const aiApiKeyInput = doc.getElementById("aiApiKey");
     const supadataApiKeyInput = doc.getElementById("supadataApiKey");
     const obsidianVaultRootInput = doc.getElementById("obsidianVaultRoot");
+    const danziStorePathInput = doc.getElementById("danziStorePath");
     const customizationPrompt = doc.getElementById("customizationPrompt");
     const copyCustomizationPromptBtn = doc.getElementById(
       "copyCustomizationPromptBtn",
@@ -433,6 +440,8 @@ const YTD_OPTIONS = (() => {
         supadataApiKeyInput.value = settings.supadataApiKey;
         if (obsidianVaultRootInput)
           obsidianVaultRootInput.value = settings.obsidianVaultRoot;
+        if (danziStorePathInput)
+          danziStorePathInput.value = settings.danziStorePath;
         if (migration.migrated) {
           await storage.set({ [settingsApi.STORAGE_KEY]: settings });
           setStatus(saveStatus, "migrationWarning");
@@ -459,6 +468,7 @@ const YTD_OPTIONS = (() => {
         aiApiKey: aiApiKeyInput.value,
         supadataApiKey: supadataApiKeyInput.value,
         obsidianVaultRoot: obsidianVaultRootInput?.value,
+        danziStorePath: danziStorePathInput?.value,
       });
 
       if (!settings.supadataApiKey) {
