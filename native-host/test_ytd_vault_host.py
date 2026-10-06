@@ -6,21 +6,20 @@ import unittest
 
 import ytd_vault_host as host
 
-SM = host.SOURCE_MATERIAL
+COLLECTION = Path('Wiki', '收藏')
 
 
 def git(root, *args):
-    return subprocess.run(['git', '-C', str(root), *args], capture_output=True, text=True, check=True).stdout
+    return subprocess.run(['git', '-C', str(root), *args], capture_output=True, text=True,
+                          encoding='utf-8', check=True).stdout
 
 
 class VaultCase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
-        (self.root / '个人运转 Wiki' / SM / 'Ali Abdaal').mkdir(parents=True)
-        (self.root / '瞄准 Wiki' / SM).mkdir(parents=True)
-        (self.root / 'Templates').mkdir()
-        (self.root / '.obsidian' / SM).mkdir(parents=True)
+        self.collection = self.root / COLLECTION
+        (self.collection / 'Ali Abdaal').mkdir(parents=True)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -29,7 +28,6 @@ class VaultCase(unittest.TestCase):
         payload = {
             'action': 'land',
             'vaultRoot': str(self.root),
-            'wiki': '个人运转 Wiki',
             'author': 'Andrew Huberman',
             'title': 'The Art of: True Happiness | Dr. Brooks?',
             'source': 'https://www.youtube.com/watch?v=Gk2ArbsrZwE',
@@ -42,14 +40,26 @@ class VaultCase(unittest.TestCase):
         return payload
 
 
-class ListWikisTest(VaultCase):
-    def test_lists_only_visible_dirs_with_source_material(self):
-        result = host.handle({'action': 'listWikis', 'vaultRoot': str(self.root)})
-        self.assertEqual(result, {'ok': True, 'wikis': ['个人运转 Wiki', '瞄准 Wiki']})
-
+class CollectionTest(VaultCase):
     def test_missing_vault_is_reported(self):
-        result = host.handle({'action': 'listWikis', 'vaultRoot': str(self.root / 'nope')})
+        result = host.handle(self.request(vaultRoot=str(self.root / 'nope')))
         self.assertFalse(result['ok'])
+
+    def test_missing_collection_is_reported_and_not_created(self):
+        (self.collection / 'Ali Abdaal').rmdir()
+        self.collection.rmdir()
+        for request in [self.request(),
+                        {'action': 'findSource', 'vaultRoot': str(self.root), 'source': VIDEO}]:
+            result = host.handle(request)
+            self.assertFalse(result['ok'], request['action'])
+            self.assertIn('Wiki/收藏/', result['error'])
+        self.assertFalse(self.collection.exists())
+
+    def test_wiki_list_is_gone_and_a_wiki_parameter_is_ignored(self):
+        self.assertFalse(host.handle({'action': 'listWikis', 'vaultRoot': str(self.root)})['ok'])
+        result = host.handle(self.request(wiki='个人运转 Wiki'))
+        self.assertTrue(result['ok'], result)
+        self.assertTrue(result['path'].startswith('Wiki/收藏/Andrew Huberman/'), result['path'])
 
 
 class DuplicateKeyTest(unittest.TestCase):
@@ -74,7 +84,7 @@ class LandTest(VaultCase):
     def test_writes_three_key_frontmatter_and_sentence_body(self):
         result = host.handle(self.request())
         self.assertTrue(result['ok'], result)
-        note = self.root / '个人运转 Wiki' / SM / 'Andrew Huberman' / 'The Art of True Happiness  Dr. Brooks.md'
+        note = self.collection / 'Andrew Huberman' / 'The Art of True Happiness  Dr. Brooks.md'
         self.assertEqual(result['path'], note.relative_to(self.root).as_posix())
         text = note.read_text(encoding='utf-8')
         self.assertEqual(text, '\n'.join([
@@ -96,16 +106,16 @@ class LandTest(VaultCase):
 
     def test_link_text_escapes_brackets(self):
         host.handle(self.request(title='Why [this] works'))
-        note = self.root / '个人运转 Wiki' / SM / 'Andrew Huberman' / 'Why [this] works.md'
+        note = self.collection / 'Andrew Huberman' / 'Why [this] works.md'
         self.assertIn('> 来源：[Why \\[this\\] works](', note.read_text(encoding='utf-8'))
 
-    def test_duplicate_video_anywhere_in_wiki_stops_before_writing(self):
-        old = self.root / '个人运转 Wiki' / SM / 'Ali Abdaal' / 'old.md'
+    def test_duplicate_video_anywhere_in_collection_stops_before_writing(self):
+        old = self.collection / 'Ali Abdaal' / 'old.md'
         old.write_text('---\ntitle: x\nsource: "https://youtu.be/Gk2ArbsrZwE"\nmedia_id: youtube:Gk2ArbsrZwE\n---\n', encoding='utf-8')
         result = host.handle(self.request())
         self.assertFalse(result['ok'])
         self.assertEqual(result['existing'], old.relative_to(self.root).as_posix())
-        self.assertFalse((self.root / '个人运转 Wiki' / SM / 'Andrew Huberman').exists())
+        self.assertFalse((self.collection / 'Andrew Huberman').exists())
 
     def test_same_file_name_stops(self):
         host.handle(self.request())
@@ -113,9 +123,7 @@ class LandTest(VaultCase):
         self.assertFalse(result['ok'])
         self.assertIn('existing', result)
 
-    def test_rejects_unknown_wiki_and_path_tricks(self):
-        for wiki in ['Templates', '../个人运转 Wiki', '.obsidian', '']:
-            self.assertFalse(host.handle(self.request(wiki=wiki))['ok'], wiki)
+    def test_rejects_path_tricks(self):
         self.assertFalse(host.handle(self.request(author='..'))['ok'])
         self.assertFalse(host.handle(self.request(title='///'))['ok'])
 
@@ -142,7 +150,7 @@ class GitVaultCase(VaultCase):
 
 class CommitTest(GitVaultCase):
     def test_reuses_existing_author_dir_regardless_of_case(self):
-        (self.root / '个人运转 Wiki' / SM / 'andrew huberman').mkdir()
+        (self.collection / 'andrew huberman').mkdir()
         result = host.handle(self.request())
         self.assertTrue(result['commit']['ok'], result)
         self.assertEqual(result['path'].split('/')[2], 'andrew huberman')
@@ -190,7 +198,7 @@ class AddWordTest(GitVaultCase):
         super().setUp()
         self.store = self.root / 'store.py'
         self.store.write_text(FAKE_STORE, encoding='utf-8')
-        self.note = self.root / '瞄准 Wiki' / SM / 'talk.md'
+        self.note = self.collection / 'Ali Abdaal' / 'talk.md'
         self.note.write_text(f'---\ntitle: Talk\nsource: {VIDEO}\n---\n## Transcript\n', encoding='utf-8')
         git(self.root, 'add', 'store.py', self.note.relative_to(self.root).as_posix())
         git(self.root, 'commit', '-q', '-m', 'init', '--', 'store.py', self.note.relative_to(self.root).as_posix())
@@ -209,7 +217,7 @@ class AddWordTest(GitVaultCase):
     def store_call(self):
         return json.loads((self.root / 'store-call.json').read_text(encoding='utf-8'))
 
-    def test_find_source_searches_every_wiki(self):
+    def test_find_source_searches_the_whole_collection(self):
         result = host.handle({'action': 'findSource', 'vaultRoot': str(self.root), 'source': VIDEO})
         self.assertEqual(result, {'ok': True, 'landed': True, 'path': self.note.relative_to(self.root).as_posix()})
         missing = host.handle({'action': 'findSource', 'vaultRoot': str(self.root),
