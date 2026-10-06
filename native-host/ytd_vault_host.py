@@ -1,8 +1,9 @@
-"""YouTube Digest native messaging host: land platform captions in an Obsidian Wiki.
+"""YouTube Digest native messaging host: land platform captions in the Obsidian Wiki.
 
 Chrome starts this script on demand (see install.ps1), sends one JSON request,
-and reads one JSON response. `land` writes exactly one Source Material note per
-the for_obsidian Knowledge System contract, then commits only that file;
+and reads one JSON response. `land` writes exactly one collection note,
+`Wiki/收藏/<作者>/<标题>.md`, per the for_obsidian Knowledge System contract
+(never creating `Wiki/收藏/` itself), then commits only that file;
 `addWord` records one lookup in word/ through danzi-skill's store script.
 """
 from __future__ import annotations
@@ -17,11 +18,17 @@ import sys
 import tempfile
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-SOURCE_MATERIAL = '2 - Source Material'
+COLLECTION = Path('Wiki', '收藏')
 ILLEGAL = r'[\\/:*?"<>|]'
 CONFIG_FILE = Path(__file__).with_name('config.json')
 YOUTUBE_HOSTS = ('youtube.com', 'youtube-nocookie.com')
-TRACKING_PARAMS = {'si', 'feature', 'fbclid', 'gclid'}
+YOUTUBE_PATHS = ('shorts', 'embed', 'live', 'v')
+TIME_PARAMS = {'t', 'start', 'time_continue'}
+TRACKING_PARAMS = {'si', 'feature', 'fbclid', 'gclid', 'igshid',
+                   # bilibili share and click tracking
+                   'spm_id_from', 'vd_source', 'from_spmid', 'spmid', 'share_source', 'share_medium',
+                   'share_plat', 'share_session_id', 'share_tag', 'share_from', 'unique_k', 'buvid',
+                   'up_id', 'plat_id', 'is_story_h5', 'bbid'}
 
 
 # ---------------------------------------------------------------- protocol
@@ -60,9 +67,11 @@ def vault_root(request):
     return path
 
 
-def find_wikis(root):
-    return sorted(p.name for p in Path(root).iterdir()
-                  if p.is_dir() and not p.name.startswith('.') and (p / SOURCE_MATERIAL).is_dir())
+def collection_dir(root):
+    collection = Path(root) / COLLECTION
+    if not collection.is_dir():
+        raise LandingError(f'vault 下缺少收藏区目录 {COLLECTION.as_posix()}/。')
+    return collection
 
 
 def clean_name(value, label):
@@ -72,28 +81,44 @@ def clean_name(value, label):
     return cleaned
 
 
+def is_url(source):
+    # `D:/media/a.mp4` parses with scheme `d`; only http(s) counts as a web source.
+    return re.match(r'https?://', source, re.I) is not None
+
+
+def clean_url(url):
+    """The URL without fragment, time parameters and tracking parameters."""
+    parts = urlsplit(url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+             if k not in TIME_PARAMS and k not in TRACKING_PARAMS and not k.startswith('utm_')]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ''))
+
+
 def source_key(source):
-    """Duplicate key derived from frontmatter `source` (shared with video-transcriber)."""
-    text = str(source or '').strip().strip('"\'')
+    """Duplicate key derived from frontmatter `source`, the same contract as video-transcriber
+    (tests/fixtures/dedupe_cases.json): YouTube video ID, otherwise the cleaned URL, or the
+    bare file name of local media."""
+    text = str(source or '').strip().strip('"\'').strip()
+    if not is_url(text):
+        return 'file:' + re.split(r'[\\/]', text)[-1]
     parts = urlsplit(text)
-    if not parts.scheme:
-        return f'file:{text}'
     host = (parts.hostname or '').lower()
     if host == 'youtu.be':
-        return f'youtube:{parts.path.strip("/").split("/")[0]}'
-    if any(host == h or host.endswith('.' + h) for h in YOUTUBE_HOSTS):
+        video = parts.path.strip('/').split('/')[0]
+        if video:
+            return f'youtube:{video}'
+    elif any(host == h or host.endswith('.' + h) for h in YOUTUBE_HOSTS):
         video = dict(parse_qsl(parts.query)).get('v')
         segments = [s for s in parts.path.split('/') if s]
-        if not video and len(segments) >= 2 and segments[0] in ('shorts', 'embed', 'live', 'v'):
+        if not video and len(segments) >= 2 and segments[0] in YOUTUBE_PATHS:
             video = segments[1]
         if video:
             return f'youtube:{video}'
-    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
-             if not k.startswith('utm_') and k not in TRACKING_PARAMS]
-    return urlunsplit((parts.scheme.lower(), host, parts.path.rstrip('/'), urlencode(query), ''))
+    cleaned = urlsplit(clean_url(text))
+    return urlunsplit((cleaned.scheme.lower(), host, cleaned.path.rstrip('/'), cleaned.query, ''))
 
 
-def find_author_dir(source_material, author):
+def find_author_dir(collection, author):
     """Reuse an existing author folder that differs only in case.
 
     Windows paths ignore case but git pathspecs do not, so writing into
@@ -101,17 +126,17 @@ def find_author_dir(source_material, author):
     use the folder's real on-disk name.
     """
     wanted = author.casefold()
-    for child in source_material.iterdir():
+    for child in collection.iterdir():
         if child.is_dir() and child.name.casefold() == wanted:
             return child
-    return source_material / author
+    return collection / author
 
 
 SOURCE_LINE = re.compile(r'^source:\s*(.+?)\s*$', re.M)
 
 
-def find_duplicate(wiki_dir, key):
-    for note in sorted((wiki_dir / SOURCE_MATERIAL).rglob('*.md')):
+def find_duplicate(collection, key):
+    for note in sorted(collection.rglob('*.md')):
         try:
             with note.open(encoding='utf-8', errors='replace') as handle:
                 head = handle.read(4096)
@@ -199,22 +224,21 @@ class LandingError(Exception):
 
 def land(request):
     root = vault_root(request)
-    wiki = str(request.get('wiki') or '')
-    if wiki not in find_wikis(root):
-        raise LandingError(f'目标 Wiki 不存在或缺少 {SOURCE_MATERIAL}/：{wiki}')
-    wiki_dir = root / wiki
+    collection = collection_dir(root)
     author = clean_name(request.get('author'), '作者')
     title = str(request.get('title') or '').strip()
     file_title = clean_name(title, '标题')
     source = str(request.get('source') or '').strip()
-    if not urlsplit(source).scheme:
+    if not is_url(source):
         raise LandingError('缺少视频网址。')
+    # Same cleaning as video-transcriber, so both tools write the same `source`.
+    source = clean_url(source)
     segments = clean_segments(request.get('segments'))
 
-    duplicate = find_duplicate(wiki_dir, source_key(source))
+    duplicate = find_duplicate(collection, source_key(source))
     if duplicate:
         return {'ok': False, 'error': '这个视频已经落盘过。', 'existing': duplicate.relative_to(root).as_posix()}
-    author_dir = find_author_dir(wiki_dir / SOURCE_MATERIAL, author)
+    author_dir = find_author_dir(collection, author)
     note = author_dir / f'{file_title}.md'
     if note.exists():
         return {'ok': False, 'error': '同名文件已存在。', 'existing': note.relative_to(root).as_posix()}
@@ -236,12 +260,7 @@ PROFILE_LINE = re.compile(r'^(source_domain|source_topic):\s*(.+?)\s*$', re.M)
 
 
 def find_landed(root, source):
-    key = source_key(source)
-    for wiki in find_wikis(root):
-        note = find_duplicate(root / wiki, key)
-        if note:
-            return note
-    return None
+    return find_duplicate(collection_dir(root), source_key(source))
 
 
 def source_profile(note):
@@ -322,9 +341,6 @@ def add_word(request):
 def handle(request):
     try:
         action = request.get('action') if isinstance(request, dict) else None
-        if action == 'listWikis':
-            root = vault_root(request)
-            return {'ok': True, 'wikis': find_wikis(root)}
         if action == 'land':
             return land(request)
         if action == 'findSource':

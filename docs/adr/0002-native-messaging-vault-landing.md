@@ -24,3 +24,7 @@ Native Messaging 的代价：需要一次性安装（Python 3 与注册表键）
 
 - 用户确认：不想每次先启动 video-transcriber；本地程序独立实现（Q9 A）。
 - https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging
+
+## 后续
+
+2026-10-06（Atlantis-creator/for_obsidian#45）：for_obsidian 把三个分库合成一个 Wiki（其 ADR 0006），落盘位置改为 `Wiki/收藏/<作者>/`，本地程序不再「列出 Wiki」，侧栏不再选库。查重规则与 video-transcriber 仍各自实现，但改为共用同一份用例 `tests/fixtures/dedupe_cases.json`，契约变更时两边同步这份文件。

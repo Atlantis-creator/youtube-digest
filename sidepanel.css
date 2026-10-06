@@ -739,7 +739,6 @@ body {
   font: 600 11px/1.3 var(--font-body);
 }
 
-.wiki-landing-field select,
 .wiki-landing-field input {
   min-width: 0;
   padding: 5px 8px;

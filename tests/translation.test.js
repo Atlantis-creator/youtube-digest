@@ -707,13 +707,15 @@ test("language bar is pinned in the header with separate sidebar and video group
   assert.match(header, /id="landToWikiBtn"/);
   assert.match(header, /id="wikiLandingPanel"/);
   assert.match(header, /id="wikiLandingStatus"/);
+  // One collection: the panel confirms only author and title, never a target Wiki.
+  assert.doesNotMatch(html, /id="wikiLandingWiki"/);
+  assert.doesNotMatch(js, /listWikis/);
   assert.match(js, /buildVideoSubtitlePayload\(\s*segments,\s*currentVideoSubtitleMode,/);
 });
 
 test("save to Wiki sends sentence segments of original text with a canonical source", () => {
   const { buildWikiLandingRequest } = loadSidepanelHelpers();
   const request = buildWikiLandingRequest({
-    wiki: "个人运转 Wiki",
     author: "  Andrew Huberman ",
     title: " Episode ",
     videoId: "Gk2ArbsrZwE",
@@ -727,13 +729,14 @@ test("save to Wiki sends sentence segments of original text with a canonical sou
   assert.equal(request.title, "Episode");
   assert.equal(request.source, "https://www.youtube.com/watch?v=Gk2ArbsrZwE");
   assert.equal(JSON.stringify(request.segments), JSON.stringify([{ start: 12, text: "First sentence." }]));
+  assert.equal("wiki" in request, false);
 });
 
 test("save to Wiki reports landing, commit failure and duplicates plainly", () => {
   const { describeWikiLandingResult } = loadSidepanelHelpers();
   assert.deepEqual(
-    { ...describeWikiLandingResult({ ok: true, path: "W/2 - Source Material/A/T.md", commit: { ok: true, hash: "abc123" } }) },
-    { error: false, text: "已落盘：W/2 - Source Material/A/T.md；已提交 abc123" },
+    { ...describeWikiLandingResult({ ok: true, path: "Wiki/收藏/A/T.md", commit: { ok: true, hash: "abc123" } }) },
+    { error: false, text: "已落盘：Wiki/收藏/A/T.md；已提交 abc123" },
   );
   const commitFailed = describeWikiLandingResult({ ok: true, path: "p.md", commit: { ok: false, error: "index.lock" } });
   assert.equal(commitFailed.error, true);
@@ -748,21 +751,23 @@ test("vault host requests carry the configured vault and explain a missing host"
     settings: { obsidianVaultRoot: "D:/vault" },
     sendNativeMessage: async (host, message) => {
       sent.push({ host, message });
-      return { ok: true, wikis: ["W"] };
+      return { ok: true, landed: false };
     },
   });
-  const result = await helpers.handleVaultHostRequest({ action: "listWikis", vaultRoot: "C:/evil" });
+  const result = await helpers.handleVaultHostRequest({ action: "findSource", vaultRoot: "C:/evil" });
   assert.equal(result.ok, true);
   assert.equal(sent[0].host, "com.youtube_digest.vault");
   assert.equal(sent[0].message.vaultRoot, "D:/vault");
   assert.equal((await helpers.handleVaultHostRequest({ action: "deleteAll" })).ok, false);
+  assert.equal((await helpers.handleVaultHostRequest({ action: "listWikis" })).ok, false);
+  assert.equal(sent.length, 1);
 
   const missing = loadBackgroundHelpers({
     sendNativeMessage: async () => {
       throw new Error("Specified native messaging host not found.");
     },
   });
-  const failure = await missing.handleVaultHostRequest({ action: "listWikis" });
+  const failure = await missing.handleVaultHostRequest({ action: "findSource" });
   assert.equal(failure.ok, false);
   assert.match(failure.error, /install\.ps1/);
 });

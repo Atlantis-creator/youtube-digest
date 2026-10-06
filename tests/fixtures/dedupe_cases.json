@@ -1,0 +1,34 @@
+{
+  "about": "收藏查重的共用用例，video-transcriber 与 YouTube Digest 各自的测试读同一份文件。契约见 for_obsidian 的 docs/contexts/knowledge-system/GLOSSARY.md「外部来源标识」：查重键从 frontmatter source 推导，YouTube 网址取视频 ID，其他网址去掉片段、时间参数与追踪参数，本地媒体取原文件名。",
+  "fields": {
+    "existing": "收藏区里已有文件的 frontmatter source 原样文本（可能带 YAML 引号）",
+    "incoming": "这次要导入的来源（网址或本地媒体文件名）",
+    "duplicate": "true 表示应被识别为同一条并拒绝落盘，false 表示是不同来源"
+  },
+  "cases": [
+    {"name": "YouTube watch 与带 &t= 的 watch", "existing": "https://www.youtube.com/watch?v=Gk2ArbsrZwE", "incoming": "https://www.youtube.com/watch?v=Gk2ArbsrZwE&t=30s", "duplicate": true},
+    {"name": "YouTube watch 与 youtu.be 带 si", "existing": "https://www.youtube.com/watch?v=Gk2ArbsrZwE", "incoming": "https://youtu.be/Gk2ArbsrZwE?si=abc123", "duplicate": true},
+    {"name": "YouTube youtu.be 带 ?t= 与 watch", "existing": "https://youtu.be/HrkhzzTh46Q?t=919", "incoming": "https://www.youtube.com/watch?v=HrkhzzTh46Q", "duplicate": true},
+    {"name": "YouTube watch 与手机版 shorts", "existing": "https://www.youtube.com/watch?v=Gk2ArbsrZwE", "incoming": "https://m.youtube.com/shorts/Gk2ArbsrZwE", "duplicate": true},
+    {"name": "YouTube watch 与 embed", "existing": "https://www.youtube.com/watch?v=Gk2ArbsrZwE", "incoming": "https://www.youtube.com/embed/Gk2ArbsrZwE?start=12", "duplicate": true},
+    {"name": "YouTube v 不是第一个参数", "existing": "https://youtu.be/Gk2ArbsrZwE", "incoming": "https://www.youtube.com/watch?feature=share&v=Gk2ArbsrZwE&list=PL123", "duplicate": true},
+    {"name": "YouTube live 与 nocookie embed", "existing": "https://www.youtube.com/live/Gk2ArbsrZwE", "incoming": "https://www.youtube-nocookie.com/embed/Gk2ArbsrZwE", "duplicate": true},
+    {"name": "已有文件的 source 带 YAML 引号", "existing": "\"https://www.youtube.com/watch?v=gaDdrDdczO4&t=307s\"", "incoming": "https://youtu.be/gaDdrDdczO4", "duplicate": true},
+    {"name": "YouTube 不同视频", "existing": "https://www.youtube.com/watch?v=Gk2ArbsrZwE", "incoming": "https://www.youtube.com/watch?v=OTHERvideo1", "duplicate": false},
+    {"name": "YouTube 视频 ID 区分大小写", "existing": "https://youtu.be/abcDEF12345", "incoming": "https://youtu.be/abcdef12345", "duplicate": false},
+    {"name": "B 站去掉 ?t= 时间参数", "existing": "https://www.bilibili.com/video/BV1aa411c7xx?t=534.7", "incoming": "https://www.bilibili.com/video/BV1aa411c7xx", "duplicate": true},
+    {"name": "B 站去掉追踪参数", "existing": "\"https://www.bilibili.com/video/BV1aa411c7xx/?spm_id_from=333.337.search-card.all.click&vd_source=e57b6c33f43c7747fa9e0aba418cdf66\"", "incoming": "https://www.bilibili.com/video/BV1aa411c7xx", "duplicate": true},
+    {"name": "B 站分 P 参数保留：时间参数去掉后仍是同一 P", "existing": "https://www.bilibili.com/video/BV1aa411c7xx?t=146.7&p=2", "incoming": "https://www.bilibili.com/video/BV1aa411c7xx?p=2", "duplicate": true},
+    {"name": "B 站不同分 P 是不同来源", "existing": "https://www.bilibili.com/video/BV1aa411c7xx?p=2", "incoming": "https://www.bilibili.com/video/BV1aa411c7xx?p=3", "duplicate": false},
+    {"name": "其他网址去掉片段与 utm 追踪参数", "existing": "https://example.com/a?utm_source=x&id=2#top", "incoming": "https://example.com/a?id=2", "duplicate": true},
+    {"name": "其他网址去掉 fbclid 与 gclid", "existing": "https://example.com/talk?fbclid=IwAR0&gclid=Cj0", "incoming": "https://example.com/talk", "duplicate": true},
+    {"name": "网址的协议与域名不分大小写，末尾斜杠忽略", "existing": "HTTPS://Example.COM/talk/", "incoming": "https://example.com/talk", "duplicate": true},
+    {"name": "其他网址的实义参数不同是不同来源", "existing": "https://example.com/a?id=2", "incoming": "https://example.com/a?id=3", "duplicate": false},
+    {"name": "其他网址路径不同是不同来源", "existing": "https://example.com/a", "incoming": "https://example.com/b", "duplicate": false},
+    {"name": "本地媒体同名", "existing": "lecture.mp4", "incoming": "lecture.mp4", "duplicate": true},
+    {"name": "本地媒体中文文件名带空格", "existing": "讲座 第1课.m4a", "incoming": "讲座 第1课.m4a", "duplicate": true},
+    {"name": "本地媒体不同文件名", "existing": "lecture.mp4", "incoming": "lecture2.mp4", "duplicate": false},
+    {"name": "违约写入的本地路径只取文件名", "existing": "D:/media/lecture.mp4", "incoming": "lecture.mp4", "duplicate": true},
+    {"name": "本地文件名与同名网址不是同一来源", "existing": "lecture.mp4", "incoming": "https://example.com/lecture.mp4", "duplicate": false}
+  ]
+}

@@ -102,7 +102,7 @@ API Key 和设置保存在你设备上的 Chrome 扩展本地存储中。发布�
 
 ### 存到 Obsidian Wiki
 
-点击字幕区的 **存到 Wiki**，确认目标 Wiki、作者（默认频道名）和标题后，原文字幕按句写入 `<Wiki>/2 - Source Material/<作者>/<标题>.md`，frontmatter 只有 `title`、`source`、`author`，中文译文不写入。写入前会按视频检查整个 Wiki 是否已有同一来源，写入后只为这个文件做一次 Git 提交（不推送）。
+点击字幕区的 **存到 Wiki**，确认作者（默认频道名）和标题后，原文字幕按句写入 vault 的 `Wiki/收藏/<作者>/<标题>.md`。`Wiki/收藏/` 目录必须已存在，不会自动创建。frontmatter 只有 `title`、`source`、`author`，`source` 是去掉片段、时间参数和追踪参数的视频网址；中文译文不写入。写入前会按视频检查整个收藏区是否已有同一来源（规则与 video-transcriber 相同，两边共用 `tests/fixtures/dedupe_cases.json` 里的用例），写入后只为这个文件做一次 Git 提交（不推送）。
 
 这需要一次性安装本地落盘程序（需要 Python 3）：
 
