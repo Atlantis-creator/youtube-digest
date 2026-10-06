@@ -22,7 +22,13 @@ COLLECTION = Path('Wiki', '收藏')
 ILLEGAL = r'[\\/:*?"<>|]'
 CONFIG_FILE = Path(__file__).with_name('config.json')
 YOUTUBE_HOSTS = ('youtube.com', 'youtube-nocookie.com')
-TRACKING_PARAMS = {'si', 'feature', 'fbclid', 'gclid'}
+YOUTUBE_PATHS = ('shorts', 'embed', 'live', 'v')
+TIME_PARAMS = {'t', 'start', 'time_continue'}
+TRACKING_PARAMS = {'si', 'feature', 'fbclid', 'gclid', 'igshid',
+                   # bilibili share and click tracking
+                   'spm_id_from', 'vd_source', 'from_spmid', 'spmid', 'share_source', 'share_medium',
+                   'share_plat', 'share_session_id', 'share_tag', 'share_from', 'unique_k', 'buvid',
+                   'up_id', 'plat_id', 'is_story_h5', 'bbid'}
 
 
 # ---------------------------------------------------------------- protocol
@@ -75,25 +81,41 @@ def clean_name(value, label):
     return cleaned
 
 
+def is_url(source):
+    # `D:/media/a.mp4` parses with scheme `d`; only http(s) counts as a web source.
+    return re.match(r'https?://', source, re.I) is not None
+
+
+def clean_url(url):
+    """The URL without fragment, time parameters and tracking parameters."""
+    parts = urlsplit(url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+             if k not in TIME_PARAMS and k not in TRACKING_PARAMS and not k.startswith('utm_')]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ''))
+
+
 def source_key(source):
-    """Duplicate key derived from frontmatter `source` (shared with video-transcriber)."""
-    text = str(source or '').strip().strip('"\'')
+    """Duplicate key derived from frontmatter `source`, the same contract as video-transcriber
+    (tests/fixtures/dedupe_cases.json): YouTube video ID, otherwise the cleaned URL, or the
+    bare file name of local media."""
+    text = str(source or '').strip().strip('"\'').strip()
+    if not is_url(text):
+        return 'file:' + re.split(r'[\\/]', text)[-1]
     parts = urlsplit(text)
-    if not parts.scheme:
-        return f'file:{text}'
     host = (parts.hostname or '').lower()
     if host == 'youtu.be':
-        return f'youtube:{parts.path.strip("/").split("/")[0]}'
-    if any(host == h or host.endswith('.' + h) for h in YOUTUBE_HOSTS):
+        video = parts.path.strip('/').split('/')[0]
+        if video:
+            return f'youtube:{video}'
+    elif any(host == h or host.endswith('.' + h) for h in YOUTUBE_HOSTS):
         video = dict(parse_qsl(parts.query)).get('v')
         segments = [s for s in parts.path.split('/') if s]
-        if not video and len(segments) >= 2 and segments[0] in ('shorts', 'embed', 'live', 'v'):
+        if not video and len(segments) >= 2 and segments[0] in YOUTUBE_PATHS:
             video = segments[1]
         if video:
             return f'youtube:{video}'
-    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
-             if not k.startswith('utm_') and k not in TRACKING_PARAMS]
-    return urlunsplit((parts.scheme.lower(), host, parts.path.rstrip('/'), urlencode(query), ''))
+    cleaned = urlsplit(clean_url(text))
+    return urlunsplit((cleaned.scheme.lower(), host, cleaned.path.rstrip('/'), cleaned.query, ''))
 
 
 def find_author_dir(collection, author):
@@ -207,8 +229,10 @@ def land(request):
     title = str(request.get('title') or '').strip()
     file_title = clean_name(title, '标题')
     source = str(request.get('source') or '').strip()
-    if not urlsplit(source).scheme:
+    if not is_url(source):
         raise LandingError('缺少视频网址。')
+    # Same cleaning as video-transcriber, so both tools write the same `source`.
+    source = clean_url(source)
     segments = clean_segments(request.get('segments'))
 
     duplicate = find_duplicate(collection, source_key(source))

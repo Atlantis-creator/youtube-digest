@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -62,22 +63,40 @@ class CollectionTest(VaultCase):
         self.assertTrue(result['path'].startswith('Wiki/收藏/Andrew Huberman/'), result['path'])
 
 
-class DuplicateKeyTest(unittest.TestCase):
-    def test_youtube_variants_share_the_video_id(self):
-        keys = {host.source_key(url) for url in [
-            'https://www.youtube.com/watch?v=Gk2ArbsrZwE&t=30s',
-            'https://youtu.be/Gk2ArbsrZwE?si=abc',
-            'https://m.youtube.com/shorts/Gk2ArbsrZwE',
-            'https://www.youtube.com/embed/Gk2ArbsrZwE',
-        ]}
-        self.assertEqual(keys, {'youtube:Gk2ArbsrZwE'})
+# Shared with video-transcriber: copied verbatim from its tests/fixtures/, do not edit here alone.
+DEDUPE_CASES = json.loads((Path(__file__).resolve().parent.parent / 'tests' / 'fixtures' / 'dedupe_cases.json')
+                          .read_text(encoding='utf-8'))['cases']
 
-    def test_other_urls_drop_fragment_and_tracking(self):
-        self.assertEqual(host.source_key('https://example.com/a?utm_source=x&id=2#top'),
-                         host.source_key('https://example.com/a?id=2'))
 
-    def test_local_media_uses_file_name(self):
-        self.assertEqual(host.source_key('lecture.mp4'), 'file:lecture.mp4')
+class SharedDedupeCasesTest(VaultCase):
+    """Duplicate detection follows the cases both import tools share."""
+
+    def landed(self, existing):
+        shutil.rmtree(self.collection)
+        (self.collection / 'Ali Abdaal').mkdir(parents=True)
+        old = self.collection / 'Ali Abdaal' / 'old.md'
+        old.write_text(f'---\ntitle: Old\nsource: {existing}\nauthor:\n  - Ali Abdaal\n---\n', encoding='utf-8')
+        return old.relative_to(self.root).as_posix()
+
+    def test_find_source_matches_every_shared_case(self):
+        self.assertEqual(len(DEDUPE_CASES), 24)
+        for case in DEDUPE_CASES:
+            with self.subTest(case['name']):
+                path = self.landed(case['existing'])
+                result = host.handle({'action': 'findSource', 'vaultRoot': str(self.root), 'source': case['incoming']})
+                self.assertTrue(result['ok'], result)
+                self.assertEqual(result['landed'], case['duplicate'])
+                if case['duplicate']:
+                    self.assertEqual(result['path'], path)
+
+    def test_landing_a_web_source_stops_exactly_on_shared_duplicates(self):
+        for index, case in enumerate(c for c in DEDUPE_CASES if c['incoming'].startswith('http')):
+            with self.subTest(case['name']):
+                path = self.landed(case['existing'])
+                result = host.handle(self.request(source=case['incoming'], title=f'Case {index}'))
+                self.assertEqual(result['ok'], not case['duplicate'], result)
+                if case['duplicate']:
+                    self.assertEqual(result['existing'], path)
 
 
 class LandTest(VaultCase):
@@ -103,6 +122,24 @@ class LandTest(VaultCase):
             '**01:02:05** · We talk about [happiness] today.',
             '',
         ]))
+
+    def test_source_is_written_without_fragment_time_or_tracking(self):
+        for index, (given, written) in enumerate([
+            ('https://www.youtube.com/watch?v=Gk2ArbsrZwE&t=30s&si=abc#top',
+             'https://www.youtube.com/watch?v=Gk2ArbsrZwE'),
+            ('https://www.bilibili.com/video/BV1aa411c7xx/?spm_id_from=333.337&vd_source=e57b&t=146.7&p=2',
+             'https://www.bilibili.com/video/BV1aa411c7xx/?p=2'),
+        ]):
+            result = host.handle(self.request(source=given, title=f'Clean {index}'))
+            self.assertTrue(result['ok'], result)
+            text = (self.root / result['path']).read_text(encoding='utf-8')
+            self.assertIn(f'\nsource: {written}\n', text)
+            self.assertIn(f']({written})\n', text)
+
+    def test_rejects_a_local_path_as_video_address(self):
+        result = host.handle(self.request(source='D:/media/lecture.mp4'))
+        self.assertFalse(result['ok'])
+        self.assertEqual(list(self.collection.rglob('*.md')), [])
 
     def test_link_text_escapes_brackets(self):
         host.handle(self.request(title='Why [this] works'))
