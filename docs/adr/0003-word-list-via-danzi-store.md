@@ -10,7 +10,7 @@
 
 ## 决定
 
-native host 新增加入词表操作：先在 vault 各 Wiki 的 Source Material 里按视频网址找到已落盘的逐字稿，再用子进程调用 `vocabulary_store.py record-lookup`，然后对词条和逐字稿执行 `git commit --only`。脚本路径默认是 `<vault>/.claude/skills/danzi-skill/scripts/vocabulary_store.py`，可以在设置页改。
+native host 新增加入词表操作：先在 vault 的收藏区 `Wiki/收藏/`（2026-10-06 之前是各 Wiki 的 Source Material，见 ADR 0002「后续」）里按视频网址找到已落盘的逐字稿，再用子进程调用 `vocabulary_store.py record-lookup`，然后对词条和逐字稿执行 `git commit --only`。脚本路径默认是 `<vault>/.claude/skills/danzi-skill/scripts/vocabulary_store.py`，可以在设置页改。
 
 这与 ADR 0002「落盘规则在本仓库独立实现」方向相反，是有意为之。
 

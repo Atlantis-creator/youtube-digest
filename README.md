@@ -102,7 +102,7 @@ The player's **隐藏侧栏** and **关闭字幕** buttons fade out together wit
 
 ### Save to an Obsidian Wiki
 
-Click **存到 Wiki** (save to Wiki) above the transcript, confirm the target Wiki, author (the channel by default), and title, and the original subtitles are written sentence by sentence to `<Wiki>/2 - Source Material/<author>/<title>.md`. The frontmatter holds only `title`, `source`, and `author`; Chinese translations are not written. The whole Wiki is checked for the same video first, and only that one file is committed to Git afterwards (never pushed).
+Click **存到 Wiki** (save to Wiki) above the transcript, confirm the author (the channel by default) and title, and the original subtitles are written sentence by sentence to `Wiki/收藏/<author>/<title>.md` in the vault. The `Wiki/收藏/` folder must already exist; it is never created. The frontmatter holds only `title`, `source`, and `author`, and `source` is the video URL without fragment, time, or tracking parameters; Chinese translations are not written. The whole collection is checked for the same video first (same rules and shared test cases as video-transcriber, see `tests/fixtures/dedupe_cases.json`), and only that one file is committed to Git afterwards (never pushed).
 
 This needs a one-time install of the local landing host (Python 3 required):
 
