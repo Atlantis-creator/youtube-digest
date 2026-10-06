@@ -44,7 +44,6 @@ const promptFileCache = new Map();
 
 const VAULT_HOST_NAME = "com.youtube_digest.vault";
 const VAULT_HOST_ACTIONS = new Set([
-  "listWikis",
   "land",
   "findSource",
   "addWord",

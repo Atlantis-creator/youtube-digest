@@ -958,17 +958,15 @@ function getTranscriptContentForCurrentMode() {
 }
 
 // ============================================================
-// SAVE TO WIKI — platform caption import into an Obsidian Wiki
+// SAVE TO WIKI — platform caption import into the Wiki collection
 // ============================================================
-// The panel only confirms Wiki, author and title; the local landing host
-// (native-host/) owns paths, duplicate checks, the file format and the commit.
+// The panel only confirms author and title; the local landing host
+// (native-host/) owns paths (Wiki/收藏/<作者>/), duplicate checks, the file
+// format and the commit.
 
-const LAST_LANDING_WIKI_KEY = "lastLandingWiki";
-
-function buildWikiLandingRequest({ wiki, author, title, videoId, segments }) {
+function buildWikiLandingRequest({ author, title, videoId, segments }) {
   return {
     action: "land",
-    wiki: String(wiki || ""),
     author: String(author || "").trim(),
     title: String(title || "").trim(),
     source: `https://www.youtube.com/watch?v=${encodeURIComponent(videoId || "")}`,
@@ -1005,48 +1003,18 @@ function closeWikiLanding() {
   if (panel) panel.hidden = true;
 }
 
-async function openWikiLanding() {
+function openWikiLanding() {
   if (!currentVideoId || !currentTranscript?.length) return;
-  const panel = document.getElementById("wikiLandingPanel");
-  const select = document.getElementById("wikiLandingWiki");
   document.getElementById("wikiLandingAuthor").value = currentChannelName;
   document.getElementById("wikiLandingTitle").value = currentVideoTitle;
-  select.innerHTML = "";
-  panel.hidden = true;
-  setWikiLandingStatus("正在读取 Wiki 列表…");
-
-  const [result, stored] = await Promise.all([
-    chrome.runtime
-      .sendMessage({ action: "vaultHost", request: { action: "listWikis" } })
-      .catch((error) => ({ ok: false, error: error.message })),
-    chrome.storage.local.get(LAST_LANDING_WIKI_KEY).catch(() => ({})),
-  ]);
-  if (!result?.ok) {
-    setWikiLandingStatus(`无法读取 Wiki：${result?.error || "未知错误"}`, true);
-    return;
-  }
-  if (!result.wikis.length) {
-    setWikiLandingStatus("vault 中没有含 2 - Source Material 的 Wiki。", true);
-    return;
-  }
-  result.wikis.forEach((wiki) => {
-    const option = document.createElement("option");
-    option.value = wiki;
-    option.textContent = wiki;
-    select.appendChild(option);
-  });
-  if (result.wikis.includes(stored?.[LAST_LANDING_WIKI_KEY])) {
-    select.value = stored[LAST_LANDING_WIKI_KEY];
-  }
   setWikiLandingStatus("");
-  panel.hidden = false;
+  document.getElementById("wikiLandingPanel").hidden = false;
 }
 
 async function submitWikiLanding(event) {
   event.preventDefault();
   const confirmButton = document.getElementById("wikiLandingConfirm");
   const request = buildWikiLandingRequest({
-    wiki: document.getElementById("wikiLandingWiki").value,
     author: document.getElementById("wikiLandingAuthor").value,
     title: document.getElementById("wikiLandingTitle").value,
     videoId: currentVideoId,
@@ -1060,12 +1028,7 @@ async function submitWikiLanding(event) {
       .catch((error) => ({ ok: false, error: error.message }));
     const described = describeWikiLandingResult(result);
     setWikiLandingStatus(described.text, described.error);
-    if (result?.ok) {
-      closeWikiLanding();
-      chrome.storage.local
-        .set({ [LAST_LANDING_WIKI_KEY]: request.wiki })
-        .catch(() => {});
-    }
+    if (result?.ok) closeWikiLanding();
   } finally {
     confirmButton.disabled = false;
   }

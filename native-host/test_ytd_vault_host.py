@@ -300,7 +300,7 @@ class AddWordTest(GitVaultCase):
 class ProtocolTest(unittest.TestCase):
     def test_round_trips_length_prefixed_json(self):
         import io
-        message = {'action': 'listWikis', 'vaultRoot': '中文'}
+        message = {'action': 'findSource', 'vaultRoot': '中文'}
         body = json.dumps(message).encode('utf-8')
         stream = io.BytesIO(len(body).to_bytes(4, 'little') + body)
         self.assertEqual(host.read_message(stream), message)
