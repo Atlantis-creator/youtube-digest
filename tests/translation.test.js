@@ -930,3 +930,66 @@ test("prompt sections load from CRLF checkouts", async () => {
   assert.equal(result.success, true, result.error);
   assert.doesNotMatch(requests[0].messages[0].content, /\r/);
 });
+
+function startTranslationQueue({ done = new Set() } = {}) {
+  const { createTranslationQueue } = loadSidepanelHelpers();
+  const batches = [];
+  let finishBatch = () => {};
+  const queue = createTranslationQueue({
+    batchSize: 3,
+    isDone: (index) => done.has(index),
+    requestBatch: (indices) => {
+      batches.push(indices);
+      return new Promise((resolve) => {
+        finishBatch = () => {
+          indices.forEach((index) => done.add(index));
+          resolve();
+        };
+      });
+    },
+  });
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  return { queue, batches, settle, finish: async () => { finishBatch(); await settle(); } };
+}
+
+test("playback rows jump ahead of rows passed on a long scroll", async () => {
+  const { queue, batches, settle, finish } = startTranslationQueue();
+  for (let index = 0; index < 300; index += 1) queue.enqueue(index);
+  await settle();
+  queue.enqueue(776, { urgent: true });
+  queue.enqueue(777, { urgent: true });
+  await finish();
+  assert.deepEqual([...batches[1]], [776, 777, 3]);
+});
+
+test("rows that leave the viewport leave the queue, playback rows stay", async () => {
+  const { queue, batches, settle, finish } = startTranslationQueue();
+  [0, 1, 2, 10, 11].forEach((index) => queue.enqueue(index));
+  await settle();
+  queue.enqueue(776, { urgent: true });
+  queue.drop(10);
+  queue.drop(11);
+  queue.drop(776);
+  await finish();
+  assert.deepEqual([...batches[1]], [776]);
+});
+
+test("rows already in flight are not requested twice", async () => {
+  const { queue, batches, settle, finish } = startTranslationQueue();
+  [0, 1, 2].forEach((index) => queue.enqueue(index));
+  await settle();
+  [0, 1, 2].forEach((index) => queue.enqueue(index));
+  await finish();
+  await finish();
+  assert.equal(batches.length, 1);
+});
+
+test("Retry re-requests a finished row ahead of the queue", async () => {
+  const { queue, batches, settle, finish } = startTranslationQueue({ done: new Set([5]) });
+  queue.enqueue(5);
+  [0, 1, 2, 3, 4].forEach((index) => queue.enqueue(index));
+  await settle();
+  queue.enqueue(5, { urgent: true, force: true });
+  await finish();
+  assert.deepEqual([...batches[1]], [5, 3, 4]);
+});

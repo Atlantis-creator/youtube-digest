@@ -39,6 +39,8 @@ let translationWorkCount = 0;
 let transcriptScrollObserver = null;
 // Stable keys include the video, source mode, language, and semantic segment ID.
 let transcriptParagraphCache = new Map();
+// Same keys; a failed row waits for Retry instead of being re-requested.
+let transcriptTranslationFailures = new Set();
 const TRANSLATION_MESSAGE_TIMEOUT_MS = 130_000;
 
 function normalizeTranscriptMode(mode) {
@@ -2132,8 +2134,8 @@ function highlightActiveEntry(currentSeconds) {
   if (transcriptNeedsTranslation() && activeTranslationQueue) {
     // Video subtitles need the spoken line now and the next one shortly.
     const activeIndex = Number(activeEntry.dataset.segmentIndex);
-    activeTranslationQueue.enqueue(activeIndex);
-    activeTranslationQueue.enqueue(activeIndex + 1);
+    activeTranslationQueue.enqueue(activeIndex, { urgent: true });
+    activeTranslationQueue.enqueue(activeIndex + 1, { urgent: true });
   }
 
   // Skip if this entry is already highlighted (no DOM thrashing)
@@ -2427,11 +2429,12 @@ function updateTranslatedRow(segment, index, alignedItem, generation) {
   );
   if (!row) return;
 
+  const cacheKey = transcriptTranslationCacheKey(segment);
   if (alignedItem.text) {
-    transcriptParagraphCache.set(
-      transcriptTranslationCacheKey(segment),
-      alignedItem.text,
-    );
+    transcriptParagraphCache.set(cacheKey, alignedItem.text);
+    transcriptTranslationFailures.delete(cacheKey);
+  } else {
+    transcriptTranslationFailures.add(cacheKey);
   }
   // Sidebar in Original: the translation only feeds the video subtitles.
   if (currentTranscriptMode === "original") return;
@@ -2539,12 +2542,73 @@ function retryTranslationSegment(index, generation) {
       translation.textContent = "Retrying…";
     }
   }
-  activeTranslationQueue.enqueue(index, true);
+  activeTranslationQueue.enqueue(index, { urgent: true, force: true });
+}
+
+/**
+ * Orders transcript translation work, one batch in flight at a time so the
+ * provider is never flooded. Urgent rows (the line being spoken, Retry) go
+ * ahead of rows the reader is merely looking at, and rows that scroll out of
+ * view leave the line. Without both, opening a long video near its end
+ * strands the current line behind hundreds of rows the sidebar scrolled past.
+ */
+function createTranslationQueue({ batchSize, isDone, requestBatch }) {
+  const urgent = [];
+  const normal = [];
+  const inFlight = new Set();
+  let processing = false;
+  let stopped = false;
+
+  const remove = (list, index) => {
+    const at = list.indexOf(index);
+    if (at !== -1) list.splice(at, 1);
+  };
+
+  const processNext = async () => {
+    if (processing || stopped) return;
+    const indices = urgent.splice(0, batchSize);
+    indices.push(...normal.splice(0, batchSize - indices.length));
+    if (!indices.length) return;
+    processing = true;
+    indices.forEach((index) => inFlight.add(index));
+    try {
+      await requestBatch(indices);
+    } finally {
+      indices.forEach((index) => inFlight.delete(index));
+      processing = false;
+      processNext();
+    }
+  };
+
+  return {
+    enqueue(index, { urgent: isUrgent = false, force = false } = {}) {
+      if (stopped || !Number.isInteger(index) || inFlight.has(index)) return;
+      if (!force && isDone(index)) return;
+      if (urgent.includes(index)) return;
+      if (isUrgent) {
+        remove(normal, index);
+        urgent.push(index);
+      } else if (!normal.includes(index)) {
+        normal.push(index);
+      }
+      // Let all entries reported in the same turn collect before the worker
+      // starts, producing one small contextual multi-segment request.
+      Promise.resolve().then(processNext);
+    },
+    drop(index) {
+      remove(normal, index);
+    },
+    stop() {
+      stopped = true;
+      urgent.length = 0;
+      normal.length = 0;
+    },
+  };
 }
 
 /**
  * Renders immediately, translates the first small batch, then observes the
- * remaining rows. Batches are sequential so the provider is never flooded.
+ * remaining rows.
  */
 async function translateTranscript() {
   const segments = getActiveTranscriptSegments();
@@ -2558,54 +2622,36 @@ async function translateTranscript() {
 
   const rows = renderTranscriptModeRows(segments, mode);
   syncVideoSubtitleOverlay();
-  const queue = [];
-  const queued = new Set();
-  let processing = false;
-
-  const processNext = async () => {
-    if (processing || queue.length === 0 || generation !== translationGeneration)
-      return;
-    processing = true;
-    const indices = queue.splice(0, 3);
-    indices.forEach((index) => queued.delete(index));
-    try {
-      await requestTranscriptTranslationBatch(
-        indices,
-        segments,
-        generation,
-        videoId,
-        mode,
+  activeTranslationQueue?.stop();
+  const queue = createTranslationQueue({
+    batchSize: 3,
+    isDone: (index) => {
+      if (!segments[index]) return true;
+      const key = transcriptTranslationCacheKey(segments[index]);
+      return (
+        transcriptParagraphCache.has(key) || transcriptTranslationFailures.has(key)
       );
-    } finally {
-      processing = false;
-      if (queue.length && generation === translationGeneration) processNext();
-    }
-  };
-
-  const enqueue = (index, force = false) => {
-    if (!Number.isInteger(index) || !segments[index]) return;
-    const cached = transcriptParagraphCache.has(
-      transcriptTranslationCacheKey(segments[index]),
-    );
-    if ((!force && cached) || queued.has(index)) return;
-    queue.push(index);
-    queued.add(index);
-    // Let all entries reported in the same viewport turn collect before the
-    // worker starts, producing one small contextual multi-segment request.
-    Promise.resolve().then(processNext);
-  };
-  activeTranslationQueue = { enqueue };
+    },
+    requestBatch: (indices) =>
+      generation === translationGeneration
+        ? requestTranscriptTranslationBatch(indices, segments, generation, videoId, mode)
+        : Promise.resolve(),
+  });
+  activeTranslationQueue = queue;
 
   transcriptScrollObserver = new IntersectionObserver(
     (observerEntries) => {
       observerEntries
-        .filter((entry) => entry.isIntersecting)
         .sort(
           (a, b) =>
             Number(a.target.dataset.segmentIndex) -
             Number(b.target.dataset.segmentIndex),
         )
-        .forEach((entry) => enqueue(Number(entry.target.dataset.segmentIndex)));
+        .forEach((entry) => {
+          const index = Number(entry.target.dataset.segmentIndex);
+          if (entry.isIntersecting) queue.enqueue(index);
+          else queue.drop(index);
+        });
     },
     {
       root: document.getElementById("contentArea"),
@@ -2619,7 +2665,7 @@ async function translateTranscript() {
   if (mode === "original") return;
   rows.forEach((row, index) => {
     if (!row.classList.contains("translated")) transcriptScrollObserver.observe(row);
-    if (index < 3) enqueue(index);
+    if (index < 3) queue.enqueue(index);
   });
 }
 
@@ -2638,6 +2684,7 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   groupTranscriptEntries,
   splitOversizedThought,
   alignTranslatedSegmentBatch,
+  createTranslationQueue,
   renderSubtitleInlineMarkup,
   renderTranscriptSegmentContent,
   normalizeTranscriptMode,
