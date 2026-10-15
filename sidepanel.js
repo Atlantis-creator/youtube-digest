@@ -109,7 +109,7 @@ function sendTranslationMessage(message) {
 // --- Auto-scroll state (follow video playback in transcript) ---
 let autoScrollEnabled = true; // True = scroll transcript to follow video playback
 let autoScrollInterval = null; // setInterval ID for polling video time
-let lastAutoScrollTime = 0; // Timestamp of last programmatic scroll (ignores scroll events within 1s)
+let readerPointerHeld = false; // Scrolls while a pointer is held are the reader's (scrollbar drag, drag-select)
 
 // ============================================================
 // TRANSCRIPT GROUPING
@@ -1993,6 +1993,21 @@ async function deleteNote(noteId) {
 // 30-second chunk is currently being spoken. If the user manually scrolls
 // (e.g., to read ahead), auto-scroll pauses and a "Follow playback" button
 // appears so they can resume it. Highlight always stays active regardless.
+//
+// "Manually" is judged from the reader's input (wheel, touch, scroll keys,
+// a held pointer), never from scroll events alone: a smooth scroll across
+// minutes of transcript can animate for well over a second, and timing
+// windows misread its tail as the reader scrolling away.
+
+const READER_SCROLL_KEYS = new Set([
+  "ArrowUp",
+  "ArrowDown",
+  "PageUp",
+  "PageDown",
+  "Home",
+  "End",
+  " ",
+]);
 
 /**
  * Starts polling the video's current time and highlighting/scrolling
@@ -2010,10 +2025,22 @@ function startPlaybackTracking() {
   // Poll video time every 500ms
   autoScrollInterval = setInterval(() => playbackTrackingTick(), 500);
 
-  // Listen for manual scrolls on the content area
+  // Listen for the reader scrolling the content area themselves
   const contentArea = document.getElementById("contentArea");
-  contentArea.removeEventListener("scroll", onContentAreaScroll);
-  contentArea.addEventListener("scroll", onContentAreaScroll);
+  const readerListeners = [
+    [contentArea, "wheel", onContentAreaWheel],
+    [contentArea, "touchmove", leaveFollowPlayback],
+    [window, "keydown", onReaderKeydown],
+    [contentArea, "pointerdown", onContentAreaPointerDown],
+    [contentArea, "scroll", onContentAreaScroll],
+    [window, "pointerup", releaseReaderPointer],
+    [window, "pointercancel", releaseReaderPointer],
+    [window, "blur", releaseReaderPointer],
+  ];
+  readerListeners.forEach(([target, type, listener]) => {
+    target.removeEventListener(type, listener);
+    target.addEventListener(type, listener, { passive: true });
+  });
 }
 
 /**
@@ -2026,7 +2053,7 @@ function stopPlaybackTracking() {
     autoScrollInterval = null;
   }
   autoScrollEnabled = true; // Reset for next time
-  lastAutoScrollTime = 0;
+  readerPointerHeld = false;
   document.getElementById("followPlaybackBtn").style.display = "none";
 
   // Remove active highlights
@@ -2061,9 +2088,7 @@ async function playbackTrackingTick() {
 /**
  * Scrolls the transcript to the entry currently being spoken (the one
  * carrying the active-playback highlight). Returns false if nothing is
- * highlighted yet. Stamps lastAutoScrollTime BEFORE scrolling so the scroll
- * events from our own smooth animation aren't mistaken for the user
- * scrolling away (which would re-disable auto-scroll immediately).
+ * highlighted yet.
  */
 function scrollToActiveEntry() {
   const activeEntry = document.querySelector(
@@ -2071,7 +2096,6 @@ function scrollToActiveEntry() {
   );
   if (!activeEntry) return false;
 
-  lastAutoScrollTime = Date.now();
   activeEntry.scrollIntoView({ behavior: "smooth", block: "center" });
   return true;
 }
@@ -2121,26 +2145,50 @@ function highlightActiveEntry(currentSeconds) {
 
   // Only scroll if auto-scroll is enabled
   if (autoScrollEnabled) {
-    lastAutoScrollTime = Date.now();
     activeEntry.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 }
 
 /**
- * Scroll event handler for the content area.
- * Detects manual scrolling and disables auto-scroll so the user
- * can read at their own pace without being yanked back.
+ * The reader scrolled the transcript themselves: stop following so they can
+ * read at their own pace without being yanked back, and offer the button.
  */
-function onContentAreaScroll() {
-  // Ignore scroll events within 1 second of a programmatic scroll
-  // (smooth scroll animations can last longer than a simple boolean flag)
-  if (Date.now() - lastAutoScrollTime < 1000) return;
-
-  // User scrolled manually — disable auto-scroll and show the button
+function leaveFollowPlayback() {
   if (autoScrollEnabled && autoScrollInterval) {
     autoScrollEnabled = false;
     document.getElementById("followPlaybackBtn").style.display = "block";
   }
+}
+
+function onContentAreaWheel(event) {
+  // Ctrl + wheel zooms the panel rather than scrolling it.
+  if (!event.ctrlKey) leaveFollowPlayback();
+}
+
+function onReaderKeydown(event) {
+  if (!READER_SCROLL_KEYS.has(event.key)) return;
+  // Typing, or Space pressing a button, does not scroll the transcript.
+  const target = event.target;
+  if (target.closest?.("input, textarea, select, [contenteditable]")) return;
+  if (event.key === " " && target.closest?.("button")) return;
+  leaveFollowPlayback();
+}
+
+function onContentAreaPointerDown() {
+  readerPointerHeld = true;
+}
+
+function releaseReaderPointer() {
+  readerPointerHeld = false;
+}
+
+/**
+ * Scroll events alone say nothing about who scrolled. Only those that happen
+ * while the reader holds a pointer (dragging the scrollbar, drag-selecting
+ * past the edge) count as the reader's.
+ */
+function onContentAreaScroll() {
+  if (readerPointerHeld) leaveFollowPlayback();
 }
 
 // ============================================================
@@ -2242,8 +2290,6 @@ function refreshTranscriptView() {
  */
 function refreshTranscriptKeepingPosition() {
   const anchorSeconds = autoScrollEnabled ? null : firstVisibleTranscriptSeconds();
-  // Replacing the rows emits scroll events that are not the reader's doing.
-  lastAutoScrollTime = Date.now();
   refreshTranscriptView();
   if (anchorSeconds === null) {
     playbackTrackingTick();
@@ -2273,7 +2319,6 @@ function scrollToTranscriptSeconds(seconds) {
       if (Number(entry.dataset.seconds) <= seconds) target = entry;
     });
   if (!target) return;
-  lastAutoScrollTime = Date.now();
   target.scrollIntoView({ block: "start" });
 }
 
