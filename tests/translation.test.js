@@ -732,6 +732,56 @@ test("save to Wiki sends sentence segments of original text with a canonical sou
   assert.equal("wiki" in request, false);
 });
 
+test("save to Wiki prefills title and author only when confirmed for this video", () => {
+  const { wikiLandingPrefill } = loadSidepanelHelpers();
+  const ducking = { videoId: "nQ50HyeBHDg", title: "How to Duck Audio", channelName: "Dunna Did It" };
+  assert.deepEqual(
+    { ...wikiLandingPrefill("nQ50HyeBHDg", ducking) },
+    { author: "Dunna Did It", title: "How to Duck Audio", confirmed: true },
+  );
+  // URL already moved on while the metadata still describes the previous video.
+  assert.deepEqual(
+    { ...wikiLandingPrefill("MCDVcQIA3UM", ducking) },
+    { author: "", title: "", confirmed: false },
+  );
+  assert.equal(wikiLandingPrefill("MCDVcQIA3UM", null).confirmed, false);
+});
+
+test("video metadata comes from oEmbed for the requested video ID", async () => {
+  const requested = [];
+  const { fetchVideoMeta } = loadBackgroundHelpers({
+    fetchImpl: async (url) => {
+      requested.push(url);
+      return {
+        ok: true,
+        json: async () => ({ title: " How to Duck Audio ", author_name: "Dunna Did It" }),
+      };
+    },
+  });
+  assert.deepEqual(
+    { ...(await fetchVideoMeta("nQ50HyeBHDg")) },
+    { videoId: "nQ50HyeBHDg", title: "How to Duck Audio", channelName: "Dunna Did It" },
+  );
+  const lookup = new URL(requested[0]);
+  assert.equal(lookup.origin + lookup.pathname, "https://www.youtube.com/oembed");
+  assert.equal(lookup.searchParams.get("url"), "https://www.youtube.com/watch?v=nQ50HyeBHDg");
+});
+
+test("video metadata lookup failures yield no title instead of a guess", async () => {
+  const notFound = loadBackgroundHelpers({ fetchImpl: async () => ({ ok: false }) });
+  assert.equal(await notFound.fetchVideoMeta("nQ50HyeBHDg"), null);
+  const offline = loadBackgroundHelpers({
+    fetchImpl: async () => {
+      throw new TypeError("Failed to fetch");
+    },
+  });
+  assert.equal(await offline.fetchVideoMeta("nQ50HyeBHDg"), null);
+  const untitled = loadBackgroundHelpers({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ title: "", author_name: "X" }) }),
+  });
+  assert.equal(await untitled.fetchVideoMeta("nQ50HyeBHDg"), null);
+});
+
 test("save to Wiki reports landing, commit failure and duplicates plainly", () => {
   const { describeWikiLandingResult } = loadSidepanelHelpers();
   assert.deepEqual(
