@@ -2531,7 +2531,10 @@ function syncVideoSubtitleOverlay() {
 }
 
 function transcriptTranslationCacheKey(segment, videoId = currentVideoId) {
-  return `${videoId}:zh:semantic:${segment.id}`;
+  // "context": translated with the previous sentence attached. Translations
+  // from before that ("semantic") are dropped on purpose (user decision
+  // 2026-10-15); rows retranslate on demand when their video is opened.
+  return `${videoId}:zh:context:${segment.id}`;
 }
 
 function setTranscriptModeButtons(mode) {

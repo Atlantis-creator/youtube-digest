@@ -1122,12 +1122,12 @@ test("segment IDs survive rows being added before them", () => {
 test("only translations of the current rows are persisted", () => {
   const { translationsToPersist } = loadSidepanelHelpers();
   const cache = new Map([
-    ["v1:zh:semantic:segment-0-abc", "当前行"],
-    ["v1:zh:semantic:segment-1-5000", "旧切分留下的"],
-    ["v2:zh:semantic:segment-0-abc", "别的视频"],
+    ["v1:zh:context:segment-0-abc", "当前行"],
+    ["v1:zh:context:segment-1-5000", "旧切分留下的"],
+    ["v2:zh:context:segment-0-abc", "别的视频"],
   ]);
   const kept = translationsToPersist(cache, "v1", [{ id: "segment-0-abc" }, { id: "segment-9-def" }]);
-  assert.deepEqual({ ...kept }, { "v1:zh:semantic:segment-0-abc": "当前行" });
+  assert.deepEqual({ ...kept }, { "v1:zh:context:segment-0-abc": "当前行" });
 });
 
 // Real auto-captions without punctuation, "Control Stress for Healthy Eating" (ulHrUVV3Kq4).
@@ -1254,4 +1254,10 @@ test("background passes the previous sentence as context for elliptical rows", a
   assert.equal(user.segments[0].previous, "Also going to take the saturation down a lot.");
   assert.match(requests[0].messages[0].content, /previous/);
   assert.match(requests[0].messages[0].content, /elliptical/i);
+});
+
+test("translations made without the previous sentence are never reused", () => {
+  const { translationsToPersist } = loadSidepanelHelpers();
+  const cache = new Map([["v1:zh:semantic:segment-8174000-c", "也许一直到底。"]]);
+  assert.deepEqual({ ...translationsToPersist(cache, "v1", [{ id: "segment-8174000-c" }]) }, {});
 });
