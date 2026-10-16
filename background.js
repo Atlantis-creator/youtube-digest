@@ -314,6 +314,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(() => sendResponse({ success: true }), () => sendResponse({ success: false }));
     return true;
   }
+  if (message.action === "fetchVideoMeta") {
+    fetchVideoMeta(message.videoId).then(sendResponse, () => sendResponse(null));
+    return true;
+  }
   // We need to return true to indicate we'll respond asynchronously
   if (message.action === "fetchTranscript") {
     handleFetchTranscript(message.videoId)
@@ -577,6 +581,30 @@ async function getPlayerVideoDetails(tabId) {
 // ============================================================
 // TRANSCRIPT FETCHING VIA SUPADATA API
 // ============================================================
+
+/**
+ * Looks up title and channel by video ID through YouTube's oEmbed endpoint.
+ * The watch page swaps its URL before its title on in-page navigation, so the
+ * page DOM can still show the previous video; oEmbed is keyed by the ID the
+ * transcript is fetched for. Returns null when the lookup fails.
+ */
+async function fetchVideoMeta(videoId) {
+  if (!videoId) return null;
+  const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+  try {
+    const response = await fetch(
+      `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(watchUrl)}`,
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    const title = String(data?.title || "").trim();
+    const channelName = String(data?.author_name || "").trim();
+    if (!title || !channelName) return null;
+    return { videoId, title, channelName };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Fetches the transcript for a YouTube video using Supadata API.
@@ -1694,6 +1722,7 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   normalizeTranslatedSegmentBatch,
   handleTranslateContent,
   handleVaultHostRequest,
+  fetchVideoMeta,
   handleExplainSelection,
   normalizeLookupResult,
 };

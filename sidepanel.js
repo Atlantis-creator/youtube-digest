@@ -23,6 +23,8 @@ let currentTranscriptTimestamped = null; // With timestamps for AI analysis
 let currentTranscriptLanguage = null;
 let currentVideoTitle = "";
 let currentChannelName = "";
+// Title and channel confirmed for a video ID; only these prefill the Wiki form.
+let currentVideoMeta = null;
 let currentVideoDescription = "";
 let currentVideoDuration = 0;
 let isAnalysisLoading = false; // Track if analysis is in progress
@@ -524,10 +526,22 @@ async function checkCurrentTab() {
         currentVideoDuration = 0;
       }
 
+      // The page swaps its URL before its title on in-page navigation, so the
+      // DOM title can still be the previous video's. Look it up by ID instead.
+      const meta = await chrome.runtime
+        .sendMessage({ action: "fetchVideoMeta", videoId })
+        .catch(() => null);
       if (requestGeneration !== digestRequestGeneration) return;
+      currentVideoMeta = meta?.videoId === videoId ? meta : null;
+      if (currentVideoMeta) {
+        currentVideoTitle = currentVideoMeta.title;
+        currentChannelName = currentVideoMeta.channelName;
+      }
+
       await startDigest(videoId, tab.url);
     } else {
       currentVideoId = null;
+      currentVideoMeta = null;
       translationGeneration += 1;
       showState("welcome");
     }
@@ -1005,11 +1019,23 @@ function closeWikiLanding() {
   if (panel) panel.hidden = true;
 }
 
+// Prefill only what was confirmed for this video ID. An unconfirmed title may
+// belong to the previously watched video, so the reader types it instead.
+function wikiLandingPrefill(videoId, meta) {
+  if (!videoId || meta?.videoId !== videoId) {
+    return { author: "", title: "", confirmed: false };
+  }
+  return { author: meta.channelName, title: meta.title, confirmed: true };
+}
+
 function openWikiLanding() {
   if (!currentVideoId || !currentTranscript?.length) return;
-  document.getElementById("wikiLandingAuthor").value = currentChannelName;
-  document.getElementById("wikiLandingTitle").value = currentVideoTitle;
-  setWikiLandingStatus("");
+  const prefill = wikiLandingPrefill(currentVideoId, currentVideoMeta);
+  document.getElementById("wikiLandingAuthor").value = prefill.author;
+  document.getElementById("wikiLandingTitle").value = prefill.title;
+  setWikiLandingStatus(
+    prefill.confirmed ? "" : "没能核实这个视频的标题和作者，请手动填写。",
+  );
   document.getElementById("wikiLandingPanel").hidden = false;
 }
 
@@ -2691,6 +2717,7 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   needsTranscriptTranslation,
   buildWikiLandingRequest,
   describeWikiLandingResult,
+  wikiLandingPrefill,
   buildLookupOccurrence,
   renderLookupHtml,
   buildWordListPayload,
