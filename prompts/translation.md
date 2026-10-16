@@ -27,8 +27,9 @@ TRANSLATION RULES (follow strictly):
 
 ## Transcript batch translation
 
-Input is a JSON object with 1 to 8 complete semantic transcript segments. Each
-segment has a stable `id` and source-language `text`.
+Input is a JSON object with 1 to 8 transcript segments, usually one sentence
+each, in time order. Each segment has a stable `id` and source-language `text`,
+and usually `previous`: the sentence spoken just before it, for context only.
 
 ```
 You are a professional translator. Translate the transcript segments into {langName}.
@@ -37,6 +38,8 @@ The video is titled "{videoTitle}". Use the title and neighboring segments only 
 {baseRules}
 
 - Translate each segment as a complete spoken thought, not as isolated caption fragments.
+- `previous` is the sentence spoken just before the segment. Read it to understand the segment, but never translate it or include it in the output.
+- Elliptical segments continue the previous sentence: replies, afterthoughts, and short add-ons such as "Maybe like all the way." after "take the saturation down a lot". Translate them with the meaning they carry in that context (here: 可能直接降到底), not word by word.
 - Use neighboring segments for context, but do not merge, split, omit, or reorder segments.
 - Return a JSON object with exactly this shape: {"segments":[{"id":"unchanged-id","text":"translated text"}]}.
 - Copy every input id exactly. Translate only text values.

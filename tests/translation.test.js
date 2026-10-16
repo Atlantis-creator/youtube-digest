@@ -1206,3 +1206,52 @@ test("background restores caption punctuation with the punctuation prompt", asyn
   assert.equal(requests[0].messages[1].content, "so um that's it");
   assert.equal((await helpers.handlePunctuateCaptions("", "Video")).success, false);
 });
+
+// Real rows from "Introduction to DaVinci Resolve" at 136:10 and 136:14.
+const SATURATION_ROWS = [
+  { id: "segment-8166000-a", start: 8166, text: "Then we can bring the contrast up." },
+  { id: "segment-8170000-b", start: 8170, text: "Also going to take the saturation down a lot." },
+  { id: "segment-8174000-c", start: 8174, text: "Maybe like all the way." },
+];
+
+test("each translated row carries the sentence spoken before it, in time order", () => {
+  const { buildTranslationBatchPayload } = loadSidepanelHelpers();
+  const payload = buildTranslationBatchPayload([2, 0], SATURATION_ROWS);
+  assert.deepEqual(JSON.parse(JSON.stringify(payload)), [
+    { id: "segment-8166000-a", text: "Then we can bring the contrast up." },
+    {
+      id: "segment-8174000-c",
+      text: "Maybe like all the way.",
+      previous: "Also going to take the saturation down a lot.",
+    },
+  ]);
+});
+
+test("background passes the previous sentence as context for elliptical rows", async () => {
+  const requests = [];
+  const helpers = loadBackgroundHelpers({
+    fetchImpl: async (url, options) => {
+      if (url.startsWith("chrome-extension://")) {
+        return { ok: true, text: async () => read("prompts/translation.md") };
+      }
+      requests.push(JSON.parse(options.body));
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: '{"segments":[{"id":"segment-8174000-c","text":"可能直接拉到底。"}]}' } }],
+        }),
+      };
+    },
+  });
+  const result = await helpers.handleTranslateContent(
+    { segments: [{ id: "segment-8174000-c", text: "Maybe like all the way.", previous: "Also going to take the saturation down a lot." }] },
+    "transcriptBatch",
+    "zh",
+    "Video",
+  );
+  assert.equal(result.success, true, result.error);
+  const user = JSON.parse(requests[0].messages[1].content);
+  assert.equal(user.segments[0].previous, "Also going to take the saturation down a lot.");
+  assert.match(requests[0].messages[0].content, /previous/);
+  assert.match(requests[0].messages[0].content, /elliptical/i);
+});
