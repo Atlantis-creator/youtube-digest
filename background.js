@@ -1552,9 +1552,12 @@ function validateTranscriptBatchRequest(content) {
     if (!text || text.length > 4000) {
       throw new Error("Transcript translation segment text is invalid or too long");
     }
+    // The sentence spoken just before, sent as context only.
+    const previous =
+      typeof segment?.previous === "string" ? segment.previous.trim().slice(0, 4000) : "";
     seenIds.add(id);
-    totalCharacters += text.length;
-    return { id, text };
+    totalCharacters += text.length + previous.length;
+    return previous ? { id, text, previous } : { id, text };
   });
   if (totalCharacters > 12000) {
     throw new Error("Transcript translation batch is too large");

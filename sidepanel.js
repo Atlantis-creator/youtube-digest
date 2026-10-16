@@ -2531,7 +2531,10 @@ function syncVideoSubtitleOverlay() {
 }
 
 function transcriptTranslationCacheKey(segment, videoId = currentVideoId) {
-  return `${videoId}:zh:semantic:${segment.id}`;
+  // "context": translated with the previous sentence attached. Translations
+  // from before that ("semantic") are dropped on purpose (user decision
+  // 2026-10-15); rows retranslate on demand when their video is opened.
+  return `${videoId}:zh:context:${segment.id}`;
 }
 
 function setTranscriptModeButtons(mode) {
@@ -2763,7 +2766,24 @@ function updateTranslatedRow(segment, index, alignedItem, videoId) {
 
 let activeTranslationQueue = null;
 
-async function requestTranscriptTranslationBatch(indices, segments, videoId) {
+/**
+ * Rows to send for one translation request, in time order. Each carries the
+ * sentence spoken just before it: rows are single sentences, and a reply
+ * such as "Maybe like all the way." only means something next to its
+ * predecessor, which may sit in another batch.
+ */
+function buildTranslationBatchPayload(indices, segments) {
+  return [...indices]
+    .sort((a, b) => a - b)
+    .map((index) => {
+      const { id, text } = segments[index];
+      const previous = segments[index - 1]?.text;
+      return previous ? { id, text, previous } : { id, text };
+    });
+}
+
+async function requestTranscriptTranslationBatch(batchIndices, segments, videoId) {
+  const indices = [...batchIndices].sort((a, b) => a - b);
   const sourceBatch = indices.map((index) => segments[index]);
   const keys = sourceBatch.map((segment) =>
     transcriptTranslationCacheKey(segment, videoId),
@@ -2774,7 +2794,7 @@ async function requestTranscriptTranslationBatch(indices, segments, videoId) {
     const result = await sendTranslationMessage({
       action: "translateContent",
       content: {
-        segments: sourceBatch.map(({ id, text }) => ({ id, text })),
+        segments: buildTranslationBatchPayload(indices, segments),
       },
       contentType: "transcriptBatch",
       targetLanguage: "zh",
@@ -2981,6 +3001,7 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   createTranslationQueue,
   planCacheEviction,
   translationsToPersist,
+  buildTranslationBatchPayload,
   applyPunctuation,
   needsPunctuation,
   groupWithPunctuation,
