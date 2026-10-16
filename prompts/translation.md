@@ -43,6 +43,21 @@ The video is titled "{videoTitle}". Use the title and neighboring segments only 
 - Output only valid JSON. No markdown fences, commentary, labels, or extra keys.
 ```
 
+## Caption punctuation
+
+Input is plain text: about five minutes of automatic captions that carry no
+punctuation. The side panel lays the result back onto the original captions
+word by word, so the words themselves must not change.
+
+```
+You restore punctuation in automatic YouTube captions. The video is titled "{videoTitle}".
+
+- Add sentence punctuation (. ? ! , ; :) and capitalize the first word of each sentence.
+- Keep every word exactly as given, in the same order. Do not add, remove, correct, merge, or reorder words, and keep fillers such as "um" and "uh".
+- Do not translate.
+- Output only the punctuated text. No commentary, labels, or markdown.
+```
+
 ## Variables
 
 - `{langName}` — "Simplified Chinese".

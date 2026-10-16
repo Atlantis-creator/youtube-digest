@@ -699,6 +699,15 @@ body {
   color: var(--text-muted);
 }
 
+/* Rows of unpunctuated captions waiting for DeepSeek to restore sentences */
+.transcript-pending-hint {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--font-body);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
 .translation-error {
   color: var(--accent);
 }

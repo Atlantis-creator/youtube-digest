@@ -1129,3 +1129,80 @@ test("only translations of the current rows are persisted", () => {
   const kept = translationsToPersist(cache, "v1", [{ id: "segment-0-abc" }, { id: "segment-9-def" }]);
   assert.deepEqual({ ...kept }, { "v1:zh:semantic:segment-0-abc": "当前行" });
 });
+
+// Real auto-captions without punctuation, "Control Stress for Healthy Eating" (ulHrUVV3Kq4).
+const UNPUNCTUATED_CAPTIONS = [
+  { start: 426, duration: 5, text: "there's acute and chronic stress and you" },
+  { start: 429, duration: 4, text: "know technically it just means anytime" },
+  { start: 431, duration: 5, text: "we feel overwhelmed that we feel like" },
+  { start: 434, duration: 4, text: "the demands are too much for our" },
+  { start: 436, duration: 4, text: "resources so um that's the definition" },
+];
+
+test("restored punctuation is laid back onto the original captions", () => {
+  const { applyPunctuation } = loadSidepanelHelpers();
+  const texts = UNPUNCTUATED_CAPTIONS.map((caption) => caption.text);
+  assert.deepEqual(
+    [...applyPunctuation(texts, "There's acute and chronic stress, and, you know, technically it just means anytime we feel overwhelmed, that we feel like the demands are too much for our resources. So, um, that's the definition.")],
+    [
+      "There's acute and chronic stress, and, you",
+      "know, technically it just means anytime",
+      "we feel overwhelmed, that we feel like",
+      "the demands are too much for our",
+      "resources. So, um, that's the definition.",
+    ],
+  );
+  // A dropped filler keeps the original word; the rest still aligns.
+  const dropped = applyPunctuation(texts, "There's acute and chronic stress, and, you know, technically it just means anytime we feel overwhelmed, that we feel like the demands are too much for our resources. So that's the definition.");
+  assert.equal(dropped[4], "resources. So um that's the definition.");
+  // Rewritten wording would desynchronise captions from the video.
+  assert.equal(applyPunctuation(texts, "Stress can be acute or chronic: it is feeling that demands exceed our resources."), null);
+});
+
+test("only captions that are nearly free of sentence punctuation need restoring", () => {
+  const { needsPunctuation } = loadSidepanelHelpers();
+  const repeat = (captions, times) => Array.from({ length: times }, () => captions).flat();
+  assert.equal(needsPunctuation(repeat(UNPUNCTUATED_CAPTIONS, 6)), true);
+  assert.equal(needsPunctuation(repeat(DAVINCI_CAPTIONS, 6)), false);
+  assert.equal(needsPunctuation(UNPUNCTUATED_CAPTIONS), false, "too short to judge");
+});
+
+test("rows wait for punctuation in ten-second slices, restored chunks become sentences", () => {
+  const { groupWithPunctuation } = loadSidepanelHelpers();
+  const captions = Array.from({ length: 200 }, (_, index) => ({
+    start: index * 3,
+    duration: 3,
+    text: `word${index} spoken without any marks at all`,
+  }));
+  const firstChunk = captions.filter((caption) => caption.start < 300);
+  const restored = firstChunk.map((caption, index) => `${caption.text}${index % 4 === 3 ? "." : ""}`);
+  const segments = groupWithPunctuation(captions, { 0: restored });
+  const ready = segments.filter((segment) => segment.start < 300);
+  const pending = segments.filter((segment) => segment.start >= 300);
+  assert.ok(ready.every((segment) => !segment.pending && /\.$/.test(segment.text)));
+  assert.ok(pending.length && pending.every((segment) => segment.pending));
+  pending.slice(0, -1).forEach((segment, index) => {
+    assert.ok(pending[index + 1].start - segment.start <= 13, "pending rows stay about ten seconds");
+  });
+  // A failed chunk keeps the slices but is no longer waiting.
+  assert.ok(groupWithPunctuation(captions, { 0: restored, 1: null }).every((segment) => !segment.pending));
+});
+
+test("background restores caption punctuation with the punctuation prompt", async () => {
+  const requests = [];
+  const helpers = loadBackgroundHelpers({
+    fetchImpl: async (url, options) => {
+      if (url.startsWith("chrome-extension://")) {
+        return { ok: true, text: async () => read("prompts/translation.md") };
+      }
+      requests.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ choices: [{ message: { content: " So, um, that's it. " } }] }) };
+    },
+  });
+  const result = await helpers.handlePunctuateCaptions("so um that's it", "Video");
+  assert.equal(result.success, true);
+  assert.equal(result.text, "So, um, that's it.");
+  assert.match(requests[0].messages[0].content, /Keep every word exactly/);
+  assert.equal(requests[0].messages[1].content, "so um that's it");
+  assert.equal((await helpers.handlePunctuateCaptions("", "Video")).success, false);
+});
