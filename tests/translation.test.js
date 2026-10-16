@@ -1043,3 +1043,35 @@ test("Retry re-requests a finished row ahead of the queue", async () => {
   await finish();
   assert.deepEqual([...batches[1]], [5, 3, 4]);
 });
+
+test("cache eviction removes the least recently opened videos past the byte budget", () => {
+  const { planCacheEviction } = loadSidepanelHelpers();
+  const entries = [
+    { key: "digest_a", bytes: 40, lastOpened: 3 },
+    { key: "digest_b", bytes: 40, lastOpened: 1 },
+    { key: "digest_c", bytes: 40, lastOpened: 2 },
+  ];
+  assert.deepEqual([...planCacheEviction(entries, 120)], []);
+  assert.deepEqual([...planCacheEviction(entries, 100)], ["digest_b"]);
+  assert.deepEqual([...planCacheEviction(entries, 50)], ["digest_b", "digest_c"]);
+  // The video just opened stays even when it alone exceeds the budget.
+  assert.deepEqual([...planCacheEviction(entries, 10)], ["digest_b", "digest_c"]);
+});
+
+test("transcript texts are rebuilt from the caption list instead of being stored", () => {
+  const { transcriptTextsFrom } = loadSidepanelHelpers();
+  const texts = transcriptTextsFrom([
+    { text: "Hello there.", start: 5 },
+    { text: "Second line", start: 75 },
+  ]);
+  assert.equal(texts.plain, "Hello there. Second line");
+  assert.equal(texts.timestamped, "[0:05] Hello there.\n[1:15] Second line");
+});
+
+test("cached digests keep one copy of the transcript and no day-based expiry", () => {
+  const js = read("sidepanel.js");
+  const save = js.match(/async function saveToCache[\s\S]*?\r?\n}\r?\n/)[0];
+  assert.doesNotMatch(save, /transcriptText:|transcriptTimestamped:/);
+  assert.doesNotMatch(js, /THIRTY_DAYS/);
+  assert.ok(JSON.parse(read("manifest.json")).permissions.includes("unlimitedStorage"));
+});

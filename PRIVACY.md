@@ -46,9 +46,10 @@ YouTube Digest uses Chrome's local extension storage, not a YouTube Digest cloud
 
 - Supadata and DeepSeek settings and API keys remain on the device in Chrome's extension storage.
 - Saved notes remain until you delete them or remove/clear the extension's data. The extension keeps up to 100 notes.
-- Recent transcript, digest, and per-segment translation cache entries are stored
-  locally. The cache is limited to 20 videos, and entries older than 30 days are
-  removed when the side panel opens.
+- Transcript, digest, and per-segment translation cache entries are stored
+  locally so reopening a video does not pay for its translations again. Entries
+  have no expiry date; when the cache passes about 100 MB, the videos opened
+  least recently are removed first.
 
 Chrome extension storage is not a password vault. Anyone with sufficient access to your browser profile or device may be able to recover locally stored keys or content. Use scoped keys where providers support them, set spending limits, and rotate or revoke a key if the device or browser profile is compromised.
 
@@ -66,6 +67,7 @@ Clearing local data does not delete information already processed or retained by
 YouTube Digest uses Chrome permissions for these purposes:
 
 - `storage`: store settings, keys, notes, and cached results locally.
+- `unlimitedStorage`: let the local cache grow past Chrome's 10 MB default, so long courses stay cached instead of being translated again.
 - `tabs`: identify and interact with the YouTube tab containing each panel.
 - `scripting`: coordinate the extension's YouTube page controls.
 - `nativeMessaging`: when you click Save to Wiki, send the current video's title, channel, URL, and original subtitles to the local landing host on your computer, which writes one Markdown file into your Obsidian vault and commits it with Git. When you click 加入词表 (add to word list), the looked-up word, its sentence, and the lookup result are sent the same way and written into the vault's word list. Nothing is sent over the network for this.

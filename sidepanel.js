@@ -277,7 +277,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   if (!Number.isInteger(context?.tabId)) return;
   youtubeTabId = context.tabId;
-  await evictOldCacheEntries(20);
+  await evictOldCacheEntries();
 
   const configStatus = await chrome.runtime.sendMessage({
     action: "checkConfig",
@@ -611,8 +611,9 @@ async function startDigest(videoId, videoUrl) {
     currentVideoUrl = videoUrl;
     currentAnalysis = cached.analysis || null;
     currentTranscript = cached.transcript;
-    currentTranscriptText = cached.transcriptText;
-    currentTranscriptTimestamped = cached.transcriptTimestamped;
+    const texts = transcriptTextsFrom(cached.transcript);
+    currentTranscriptText = texts.plain;
+    currentTranscriptTimestamped = texts.timestamped;
     currentTranscriptLanguage = cached.transcriptLanguage || null;
     currentTranscriptMode = normalizeTranscriptMode(cached.transcriptMode);
     isAnalysisLoading = false;
@@ -650,6 +651,8 @@ async function startDigest(videoId, videoUrl) {
     // Setup explain feature
     setupExplainFeature();
     if (transcriptNeedsTranslation()) translateTranscript();
+    // Opening counts as use for eviction; also slims entries saved by older versions.
+    await saveToCache(videoId);
     return;
   }
 
@@ -1763,11 +1766,51 @@ function getTranscriptContext(selectedText) {
 // CACHING
 // ============================================================
 
+// Per-segment translations are what cost money, so the cache keeps every
+// video until the total passes this budget, then drops the least recently
+// opened ones. (unlimitedStorage lifts Chrome's 10 MB default quota.)
+const DIGEST_CACHE_MAX_BYTES = 100 * 1024 * 1024;
+
+/**
+ * Plain and timestamped transcript texts, rebuilt from the caption list so
+ * the cache stores the transcript once instead of three times.
+ */
+function transcriptTextsFrom(transcript) {
+  const captions = Array.isArray(transcript) ? transcript : [];
+  return {
+    plain: captions.map((caption) => caption.text).join(" "),
+    timestamped: captions
+      .map((caption) => {
+        const start = Math.max(0, Math.floor(Number(caption.start) || 0));
+        const seconds = String(start % 60).padStart(2, "0");
+        return `[${Math.floor(start / 60)}:${seconds}] ${caption.text}`;
+      })
+      .join("\n"),
+  };
+}
+
+/**
+ * Picks cached videos to remove: least recently opened first, until the rest
+ * fit the byte budget. The most recently opened video is always kept.
+ *
+ * @param {{key: string, bytes: number, lastOpened: number}[]} entries
+ */
+function planCacheEviction(entries, maxBytes) {
+  const byAge = [...entries].sort((a, b) => a.lastOpened - b.lastOpened);
+  let total = byAge.reduce((sum, entry) => sum + entry.bytes, 0);
+  const remove = [];
+  for (const entry of byAge.slice(0, -1)) {
+    if (total <= maxBytes) break;
+    remove.push(entry.key);
+    total -= entry.bytes;
+  }
+  return remove;
+}
+
 /**
  * Saves the current digest results to persistent local storage.
  * Results survive browser restarts — reopening the same video loads from cache
  * without consuming API tokens or Supadata calls.
- * Cache expires after 30 days. Oldest entries evicted when > 20 videos cached.
  */
 async function saveToCache(videoId) {
   if (!videoId || !currentTranscript) return;
@@ -1784,14 +1827,12 @@ async function saveToCache(videoId) {
     const cacheData = {
       analysis: currentAnalysis, // May be null if not yet analyzed
       transcript: currentTranscript,
-      transcriptText: currentTranscriptText,
-      transcriptTimestamped: currentTranscriptTimestamped,
       transcriptLanguage: currentTranscriptLanguage,
       transcriptMode: currentTranscriptMode,
       videoTitle: currentVideoTitle,
       channelName: currentChannelName,
       paragraphCache: paragraphCacheForVideo,
-      timestamp: Date.now(),
+      timestamp: Date.now(), // Last opened or updated; drives eviction
     };
 
     await chrome.storage.local.set({ [`digest_${videoId}`]: cacheData });
@@ -1801,46 +1842,28 @@ async function saveToCache(videoId) {
       currentAnalysis ? "(with analysis)" : "(transcript only)",
     );
 
-    // Evict old entries if we have more than 20 videos cached
-    await evictOldCacheEntries(20);
+    await evictOldCacheEntries();
   } catch (error) {
     console.error("Cache save error:", error);
   }
 }
 
 /**
- * Keeps the cache from growing unbounded.
- * Removes the oldest entries when we exceed maxEntries videos.
- *
- * @param {number} maxEntries - Maximum number of cached videos to keep
+ * Keeps the cache within DIGEST_CACHE_MAX_BYTES.
  */
-async function evictOldCacheEntries(maxEntries) {
+async function evictOldCacheEntries(maxBytes = DIGEST_CACHE_MAX_BYTES) {
   try {
     const allData = await chrome.storage.local.get(null);
-    let digestKeys = Object.keys(allData).filter((k) =>
-      k.startsWith("digest_"),
-    );
-    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
-    const expired = digestKeys.filter((key) => {
-      const timestamp = Number(allData[key]?.timestamp) || 0;
-      return Date.now() - timestamp > THIRTY_DAYS;
-    });
-    if (expired.length) {
-      await chrome.storage.local.remove(expired);
-      const expiredSet = new Set(expired);
-      digestKeys = digestKeys.filter((key) => !expiredSet.has(key));
-    }
-
-    if (digestKeys.length <= maxEntries) return;
-
-    // Sort by timestamp (oldest first) and remove excess
-    const sorted = digestKeys
-      .map((k) => ({ key: k, ts: allData[k]?.timestamp || 0 }))
-      .sort((a, b) => a.ts - b.ts);
-
-    const toRemove = sorted
-      .slice(0, sorted.length - maxEntries)
-      .map((e) => e.key);
+    const encoder = new TextEncoder();
+    const entries = Object.keys(allData)
+      .filter((key) => key.startsWith("digest_"))
+      .map((key) => ({
+        key,
+        // Chrome counts quota as key plus JSON-serialized value.
+        bytes: encoder.encode(key + JSON.stringify(allData[key])).length,
+        lastOpened: Number(allData[key]?.timestamp) || 0,
+      }));
+    const toRemove = planCacheEviction(entries, maxBytes);
     if (toRemove.length > 0) {
       await chrome.storage.local.remove(toRemove);
       debugLog(`[YouTube Digest] Evicted ${toRemove.length} old cache entries`);
@@ -1851,26 +1874,14 @@ async function evictOldCacheEntries(maxEntries) {
 }
 
 /**
- * Loads digest results from persistent local storage.
- * Returns null if not cached or expired (30-day expiry).
+ * Loads digest results from persistent local storage, or null if not cached.
  */
 async function loadFromCache(videoId) {
   if (!videoId) return null;
 
   try {
     const result = await chrome.storage.local.get(`digest_${videoId}`);
-    const cached = result[`digest_${videoId}`];
-
-    if (!cached) return null;
-
-    // Cache expires after 30 days
-    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
-    if (Date.now() - cached.timestamp > THIRTY_DAYS) {
-      await chrome.storage.local.remove(`digest_${videoId}`);
-      return null;
-    }
-
-    return cached;
+    return result[`digest_${videoId}`] || null;
   } catch (error) {
     console.error("Cache load error:", error);
     return null;
@@ -2714,6 +2725,8 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   splitOversizedThought,
   alignTranslatedSegmentBatch,
   createTranslationQueue,
+  planCacheEviction,
+  transcriptTextsFrom,
   renderSubtitleInlineMarkup,
   renderTranscriptSegmentContent,
   normalizeTranscriptMode,
