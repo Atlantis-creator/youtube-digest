@@ -211,7 +211,7 @@ test("a huge raw Supadata entry is split into seekable bounded segments", () => 
   assert.ok(segments.every((segment) => segment.text.length <= 384));
   assert.equal(segments[0].start, 12);
   assert.ok(segments.at(-1).start > segments[0].start);
-  assert.ok(segments.every((segment) => /^segment-\d+-\d+$/.test(segment.id)));
+  assert.ok(segments.every((segment) => /^segment-\d+-[a-z0-9]+$/.test(segment.id)));
 });
 
 test("Chinese sentence and clause punctuation creates semantic guardrails", () => {
@@ -393,8 +393,13 @@ test("background rejects unsupported language fallthrough and malformed batches"
   assert.match(source, /targetLanguage !== "zh"/);
   assert.throws(
     () => validateTranscriptBatchRequest({ segments: [] }),
-    /1 to 4 segments/,
+    /1 to 8 segments/,
   );
+  const rows = (count) => ({
+    segments: Array.from({ length: count }, (_, index) => ({ id: `segment-${index}-a`, text: "One sentence." })),
+  });
+  assert.equal(validateTranscriptBatchRequest(rows(6)).length, 6);
+  assert.throws(() => validateTranscriptBatchRequest(rows(9)), /1 to 8 segments/);
   assert.throws(
     () =>
       validateTranscriptBatchRequest({
@@ -1074,4 +1079,53 @@ test("cached digests keep one copy of the transcript and no day-based expiry", (
   assert.doesNotMatch(save, /transcriptText:|transcriptTimestamped:/);
   assert.doesNotMatch(js, /THIRTY_DAYS/);
   assert.ok(JSON.parse(read("manifest.json")).permissions.includes("unlimitedStorage"));
+});
+
+// Real captions from Casey Faris, "Introduction to DaVinci Resolve" (MCDVcQIA3UM).
+const DAVINCI_CAPTIONS = [
+  { start: 6560, duration: 5, text: "then loop back to the beginning and play" },
+  { start: 6562, duration: 5, text: "again. Here we have our current frame" },
+  { start: 6565, duration: 4, text: "that we're on. And as we scrub this kind" },
+  { start: 6567, duration: 5, text: "of changes. Now, it's not very good. It's" },
+  { start: 6570, duration: 4, text: "not very interesting. So, we can change that." },
+];
+
+test("punctuated captions become one sentence per row", () => {
+  const { groupTranscriptEntries } = loadSidepanelHelpers();
+  const texts = groupTranscriptEntries(DAVINCI_CAPTIONS).map((segment) => segment.text);
+  assert.deepEqual([...texts], [
+    "then loop back to the beginning and play again.",
+    "Here we have our current frame that we're on.",
+    "And as we scrub this kind of changes.",
+    "Now, it's not very good.",
+    "It's not very interesting.",
+    "So, we can change that.",
+  ]);
+});
+
+test("a tiny sentence fragment joins the next sentence", () => {
+  const { groupTranscriptEntries } = loadSidepanelHelpers();
+  const texts = groupTranscriptEntries([
+    { start: 0, duration: 3, text: "We have these little spikes. Teen take" },
+    { start: 3, duration: 3, text: "one. We zoom in here." },
+  ]).map((segment) => segment.text);
+  assert.deepEqual([...texts], ["We have these little spikes.", "Teen take one. We zoom in here."]);
+});
+
+test("segment IDs survive rows being added before them", () => {
+  const { groupTranscriptEntries } = loadSidepanelHelpers();
+  const later = groupTranscriptEntries(DAVINCI_CAPTIONS.slice(2)).map((segment) => segment.id);
+  const all = groupTranscriptEntries(DAVINCI_CAPTIONS).map((segment) => segment.id);
+  assert.deepEqual([...later.slice(1)], [...all.slice(3)]);
+});
+
+test("only translations of the current rows are persisted", () => {
+  const { translationsToPersist } = loadSidepanelHelpers();
+  const cache = new Map([
+    ["v1:zh:semantic:segment-0-abc", "当前行"],
+    ["v1:zh:semantic:segment-1-5000", "旧切分留下的"],
+    ["v2:zh:semantic:segment-0-abc", "别的视频"],
+  ]);
+  const kept = translationsToPersist(cache, "v1", [{ id: "segment-0-abc" }, { id: "segment-9-def" }]);
+  assert.deepEqual({ ...kept }, { "v1:zh:semantic:segment-0-abc": "当前行" });
 });

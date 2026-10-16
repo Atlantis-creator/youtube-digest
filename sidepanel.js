@@ -121,8 +121,11 @@ let readerPointerHeld = false; // Scrolls while a pointer is held are the reader
 // TRANSCRIPT GROUPING
 // ============================================================
 
+// One sentence per row (user decision 2026-10-15); only fragments shorter
+// than minChars, like "Okay.", join the next sentence. Long sentences still
+// split at clauses past idealChars.
 const TRANSCRIPT_SEGMENT_LIMITS = Object.freeze({
-  minChars: 60,
+  minChars: 20,
   idealChars: 180,
   maxChars: 320,
   maxSeconds: 20,
@@ -166,6 +169,18 @@ function splitOversizedThought(text, maxChars) {
 
   if (rest) parts.push(rest);
   return parts;
+}
+
+/**
+ * Short, stable hash for segment IDs (32-bit FNV-1a, base 36).
+ */
+function hashText(text) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36);
 }
 
 /**
@@ -213,10 +228,11 @@ function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
 
   const flush = () => {
     if (!current || !current.text.trim()) return;
-    const index = grouped.length;
     const text = normalizeCaptionText(current.text);
     grouped.push({
-      id: `segment-${index}-${Math.round(current.start * 1000)}`,
+      // Start time and text, never the row number: translations cached under
+      // this ID survive later changes to how other rows are grouped.
+      id: `segment-${Math.round(current.start * 1000)}-${hashText(text)}`,
       start: current.start,
       text,
       texts: [text],
@@ -1808,6 +1824,19 @@ function planCacheEviction(entries, maxBytes) {
 }
 
 /**
+ * Translations of the video's current rows. Keys left over from an older
+ * grouping can never match a row again, so they are not carried forward.
+ */
+function translationsToPersist(cache, videoId, segments) {
+  const kept = {};
+  segments.forEach((segment) => {
+    const key = transcriptTranslationCacheKey(segment, videoId);
+    if (cache.has(key)) kept[key] = cache.get(key);
+  });
+  return kept;
+}
+
+/**
  * Saves the current digest results to persistent local storage.
  * Results survive browser restarts — reopening the same video loads from cache
  * without consuming API tokens or Supadata calls.
@@ -1816,13 +1845,11 @@ async function saveToCache(videoId) {
   if (!videoId || !currentTranscript) return;
 
   try {
-    // Persist semantic-segment translations for this video.
-    const paragraphCacheForVideo = {};
-    for (const [key, value] of transcriptParagraphCache.entries()) {
-      if (key.startsWith(`${videoId}:`)) {
-        paragraphCacheForVideo[key] = value;
-      }
-    }
+    const paragraphCacheForVideo = translationsToPersist(
+      transcriptParagraphCache,
+      videoId,
+      getActiveTranscriptSegments(),
+    );
 
     const cacheData = {
       analysis: currentAnalysis, // May be null if not yet analyzed
@@ -2662,7 +2689,9 @@ async function translateTranscript() {
   syncVideoSubtitleOverlay();
   activeTranslationQueue?.stop();
   const queue = createTranslationQueue({
-    batchSize: 3,
+    // Rows are single sentences, so six keep each request about as large as
+    // the three multi-sentence rows it replaced.
+    batchSize: 6,
     isDone: (index) => {
       if (!segments[index]) return true;
       const key = transcriptTranslationCacheKey(segments[index]);
@@ -2726,6 +2755,7 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   alignTranslatedSegmentBatch,
   createTranslationQueue,
   planCacheEviction,
+  translationsToPersist,
   transcriptTextsFrom,
   renderSubtitleInlineMarkup,
   renderTranscriptSegmentContent,

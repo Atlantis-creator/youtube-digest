@@ -1528,8 +1528,9 @@ async function getTranslationBaseRules(targetLanguage) {
 
 function validateTranscriptBatchRequest(content) {
   const segments = content?.segments;
-  if (!Array.isArray(segments) || segments.length < 1 || segments.length > 4) {
-    throw new Error("Transcript translation requires 1 to 4 segments");
+  // The side panel sends up to six single-sentence rows per batch.
+  if (!Array.isArray(segments) || segments.length < 1 || segments.length > 8) {
+    throw new Error("Transcript translation requires 1 to 8 segments");
   }
 
   const seenIds = new Set();
