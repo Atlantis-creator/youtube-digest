@@ -43,6 +43,8 @@ let transcriptScrollObserver = null;
 let transcriptParagraphCache = new Map();
 // Same keys; a failed row waits for Retry instead of being re-requested.
 let transcriptTranslationFailures = new Set();
+// Same keys; already sent to the provider, so another queue must not resend them.
+let transcriptTranslationsInFlight = new Set();
 const TRANSLATION_MESSAGE_TIMEOUT_MS = 130_000;
 
 function normalizeTranscriptMode(mode) {
@@ -2279,8 +2281,8 @@ function syncVideoSubtitleOverlay() {
     .catch(() => {});
 }
 
-function transcriptTranslationCacheKey(segment) {
-  return `${currentVideoId}:zh:semantic:${segment.id}`;
+function transcriptTranslationCacheKey(segment, videoId = currentVideoId) {
+  return `${videoId}:zh:semantic:${segment.id}`;
 }
 
 function setTranscriptModeButtons(mode) {
@@ -2448,20 +2450,25 @@ function alignTranslatedSegmentBatch(sourceSegments, responseSegments) {
   }));
 }
 
-function updateTranslatedRow(segment, index, alignedItem, generation) {
-  if (generation !== translationGeneration) return;
-  const row = document.querySelector(
-    `.transcript-entry[data-segment-id="${CSS.escape(segment.id)}"]`,
-  );
-  if (!row) return;
-
-  const cacheKey = transcriptTranslationCacheKey(segment);
+/**
+ * Records a provider result, then shows it if that video is still open. The
+ * Chinese text does not depend on the sidebar mode, so a result that arrives
+ * after a mode switch or re-render is kept rather than paid for again.
+ */
+function updateTranslatedRow(segment, index, alignedItem, videoId) {
+  const cacheKey = transcriptTranslationCacheKey(segment, videoId);
   if (alignedItem.text) {
     transcriptParagraphCache.set(cacheKey, alignedItem.text);
     transcriptTranslationFailures.delete(cacheKey);
   } else {
     transcriptTranslationFailures.add(cacheKey);
   }
+  if (videoId !== currentVideoId) return;
+  const row = document.querySelector(
+    `.transcript-entry[data-segment-id="${CSS.escape(segment.id)}"]`,
+  );
+  if (!row) return;
+
   // Sidebar in Original: the translation only feeds the video subtitles.
   if (currentTranscriptMode === "original") return;
 
@@ -2479,6 +2486,7 @@ function updateTranslatedRow(segment, index, alignedItem, generation) {
   row.classList.toggle("translation-failed", !alignedItem.text);
 
   const retry = row.querySelector(".translation-retry-btn");
+  const generation = translationGeneration;
   if (retry) {
     ["mousedown", "mouseup"].forEach((eventName) => {
       retry.addEventListener(eventName, (event) => {
@@ -2496,14 +2504,12 @@ function updateTranslatedRow(segment, index, alignedItem, generation) {
 
 let activeTranslationQueue = null;
 
-async function requestTranscriptTranslationBatch(
-  indices,
-  segments,
-  generation,
-  videoId,
-  mode,
-) {
+async function requestTranscriptTranslationBatch(indices, segments, videoId) {
   const sourceBatch = indices.map((index) => segments[index]);
+  const keys = sourceBatch.map((segment) =>
+    transcriptTranslationCacheKey(segment, videoId),
+  );
+  keys.forEach((key) => transcriptTranslationsInFlight.add(key));
   setTranslatingSpinner(true);
   try {
     const result = await sendTranslationMessage({
@@ -2515,12 +2521,6 @@ async function requestTranscriptTranslationBatch(
       targetLanguage: "zh",
       videoTitle: currentVideoTitle,
     });
-
-    const isStale =
-      generation !== translationGeneration ||
-      videoId !== currentVideoId ||
-      mode !== currentTranscriptMode;
-    if (isStale) return;
 
     const responseSegments = result?.success
       ? result.translatedContent?.segments
@@ -2534,22 +2534,23 @@ async function requestTranscriptTranslationBatch(
         sourceBatch[batchIndex],
         indices[batchIndex],
         item,
-        generation,
+        videoId,
       );
     });
+    if (videoId !== currentVideoId) return;
     await syncVideoSubtitleOverlay();
     await updateCache();
   } catch (error) {
-    if (generation !== translationGeneration) return;
     sourceBatch.forEach((segment, batchIndex) => {
       updateTranslatedRow(
         segment,
         indices[batchIndex],
         { id: segment.id, text: "", error: error.message || "Translation failed." },
-        generation,
+        videoId,
       );
     });
   } finally {
+    keys.forEach((key) => transcriptTranslationsInFlight.delete(key));
     setTranslatingSpinner(false);
   }
 }
@@ -2655,12 +2656,14 @@ async function translateTranscript() {
       if (!segments[index]) return true;
       const key = transcriptTranslationCacheKey(segments[index]);
       return (
-        transcriptParagraphCache.has(key) || transcriptTranslationFailures.has(key)
+        transcriptParagraphCache.has(key) ||
+        transcriptTranslationFailures.has(key) ||
+        transcriptTranslationsInFlight.has(key)
       );
     },
     requestBatch: (indices) =>
       generation === translationGeneration
-        ? requestTranscriptTranslationBatch(indices, segments, generation, videoId, mode)
+        ? requestTranscriptTranslationBatch(indices, segments, videoId)
         : Promise.resolve(),
   });
   activeTranslationQueue = queue;
