@@ -402,6 +402,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Punctuation for automatic captions that arrive without any.
+  if (message.action === "punctuateCaptions") {
+    handlePunctuateCaptions(message.text, message.videoTitle)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   if (message.action === "checkConfig") {
     getSettings()
       .then((settings) =>
@@ -1528,8 +1536,9 @@ async function getTranslationBaseRules(targetLanguage) {
 
 function validateTranscriptBatchRequest(content) {
   const segments = content?.segments;
-  if (!Array.isArray(segments) || segments.length < 1 || segments.length > 4) {
-    throw new Error("Transcript translation requires 1 to 4 segments");
+  // The side panel sends up to six single-sentence rows per batch.
+  if (!Array.isArray(segments) || segments.length < 1 || segments.length > 8) {
+    throw new Error("Transcript translation requires 1 to 8 segments");
   }
 
   const seenIds = new Set();
@@ -1678,6 +1687,28 @@ async function handleTranslateContent(
 }
 
 /**
+ * Restores punctuation in about five minutes of unpunctuated captions.
+ * @returns {Object} - { success, text } or { success: false, error }
+ */
+async function handlePunctuateCaptions(text, videoTitle) {
+  const source = typeof text === "string" ? text.trim() : "";
+  if (!source || source.length > 12000) {
+    return { success: false, error: "Caption text is empty or too long" };
+  }
+  const systemPrompt = await loadPromptSection(
+    "translation.md",
+    "Caption punctuation",
+    { videoTitle: videoTitle || "Unknown" },
+  );
+  const result = await callAiTranslation(systemPrompt, source, {
+    temperature: 0,
+    maxTokens: 4096,
+  });
+  if (!result.success) return result;
+  return { success: true, text: result.text.trim() };
+}
+
+/**
  * Makes a single DeepSeek call for translation.
  * Uses temperature 0.3 for consistent, predictable translations.
  *
@@ -1721,6 +1752,7 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   validateTranscriptBatchRequest,
   normalizeTranslatedSegmentBatch,
   handleTranslateContent,
+  handlePunctuateCaptions,
   handleVaultHostRequest,
   fetchVideoMeta,
   handleExplainSelection,

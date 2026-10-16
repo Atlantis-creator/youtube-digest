@@ -27,7 +27,7 @@ TRANSLATION RULES (follow strictly):
 
 ## Transcript batch translation
 
-Input is a JSON object with 1 to 4 complete semantic transcript segments. Each
+Input is a JSON object with 1 to 8 complete semantic transcript segments. Each
 segment has a stable `id` and source-language `text`.
 
 ```
@@ -41,6 +41,21 @@ The video is titled "{videoTitle}". Use the title and neighboring segments only 
 - Return a JSON object with exactly this shape: {"segments":[{"id":"unchanged-id","text":"translated text"}]}.
 - Copy every input id exactly. Translate only text values.
 - Output only valid JSON. No markdown fences, commentary, labels, or extra keys.
+```
+
+## Caption punctuation
+
+Input is plain text: about five minutes of automatic captions that carry no
+punctuation. The side panel lays the result back onto the original captions
+word by word, so the words themselves must not change.
+
+```
+You restore punctuation in automatic YouTube captions. The video is titled "{videoTitle}".
+
+- Add sentence punctuation (. ? ! , ; :) and capitalize the first word of each sentence.
+- Keep every word exactly as given, in the same order. Do not add, remove, correct, merge, or reorder words, and keep fillers such as "um" and "uh".
+- Do not translate.
+- Output only the punctuated text. No commentary, labels, or markdown.
 ```
 
 ## Variables

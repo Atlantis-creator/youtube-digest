@@ -45,6 +45,14 @@ let transcriptParagraphCache = new Map();
 let transcriptTranslationFailures = new Set();
 // Same keys; already sent to the provider, so another queue must not resend them.
 let transcriptTranslationsInFlight = new Set();
+
+// --- Punctuation state (see PUNCTUATION FOR UNPUNCTUATED AUTO-CAPTIONS) ---
+// Chunk index -> restored caption texts, or null when restoring failed.
+let currentPunctuation = {};
+// Chunks that failed for a passing reason (network, rate limit): fall back
+// for now, but are not saved, so the next visit tries again.
+let punctuationRetryable = new Set();
+let punctuationQueue = null;
 const TRANSLATION_MESSAGE_TIMEOUT_MS = 130_000;
 
 function normalizeTranscriptMode(mode) {
@@ -121,8 +129,11 @@ let readerPointerHeld = false; // Scrolls while a pointer is held are the reader
 // TRANSCRIPT GROUPING
 // ============================================================
 
+// One sentence per row (user decision 2026-10-15); only fragments shorter
+// than minChars, like "Okay.", join the next sentence. Long sentences still
+// split at clauses past idealChars.
 const TRANSCRIPT_SEGMENT_LIMITS = Object.freeze({
-  minChars: 60,
+  minChars: 20,
   idealChars: 180,
   maxChars: 320,
   maxSeconds: 20,
@@ -166,6 +177,18 @@ function splitOversizedThought(text, maxChars) {
 
   if (rest) parts.push(rest);
   return parts;
+}
+
+/**
+ * Short, stable hash for segment IDs (32-bit FNV-1a, base 36).
+ */
+function hashText(text) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36);
 }
 
 /**
@@ -213,10 +236,11 @@ function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
 
   const flush = () => {
     if (!current || !current.text.trim()) return;
-    const index = grouped.length;
     const text = normalizeCaptionText(current.text);
     grouped.push({
-      id: `segment-${index}-${Math.round(current.start * 1000)}`,
+      // Start time and text, never the row number: translations cached under
+      // this ID survive later changes to how other rows are grouped.
+      id: `segment-${Math.round(current.start * 1000)}-${hashText(text)}`,
       start: current.start,
       text,
       texts: [text],
@@ -255,6 +279,137 @@ function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
   flush();
 
   return grouped;
+}
+
+// ============================================================
+// PUNCTUATION FOR UNPUNCTUATED AUTO-CAPTIONS
+// ============================================================
+// Some auto-captions carry no punctuation at all, so grouping finds no
+// sentence ends and only its length guardrail cuts, giving 30-second walls.
+// DeepSeek restores punctuation five minutes at a time, following playback
+// (user decision 2026-10-15). Until a chunk is restored its rows are
+// ten-second slices marked pending, and pending rows are never translated:
+// they will be regrouped into sentences, and paying for both would be waste.
+
+const PUNCTUATION_CHUNK_SECONDS = 300;
+// The length guardrail cuts after the caption that reaches 1.2 × maxChars or
+// maxSeconds + 5, so rows end up about ten seconds and 120 characters long.
+const PENDING_PUNCTUATION_LIMITS = Object.freeze({
+  minChars: 20,
+  idealChars: 100,
+  maxChars: 100,
+  maxSeconds: 3,
+});
+
+function needsPunctuation(transcript) {
+  const captions = Array.isArray(transcript) ? transcript : [];
+  if (captions.length < 20) return false;
+  const marked = captions.filter((caption) =>
+    /[.!?。！？]/.test(String(caption?.text || "")),
+  ).length;
+  return marked / captions.length < 0.05;
+}
+
+function punctuationChunkOf(seconds) {
+  return Math.floor(Math.max(0, Number(seconds) || 0) / PUNCTUATION_CHUNK_SECONDS);
+}
+
+const comparableWord = (word) =>
+  String(word || "").toLowerCase().replace(/[^\p{L}\p{N}'%]/gu, "");
+
+/**
+ * Lays DeepSeek's punctuated text back onto the original captions word by
+ * word, so every caption keeps its own timing. A word the model dropped or
+ * added is tolerated; rewording is not (null), since the rows would no longer
+ * match what is spoken.
+ */
+function applyPunctuation(captionTexts, punctuatedText) {
+  const words = captionTexts.map((text) =>
+    normalizeCaptionText(text).split(" ").filter(Boolean),
+  );
+  const input = words.flat();
+  const output = String(punctuatedText || "").split(/\s+/).filter(Boolean);
+  const result = input.slice();
+  const find = (list, from, target) => {
+    for (let k = from + 1; k <= from + 3 && k < list.length; k += 1) {
+      if (comparableWord(list[k]) === target) return k;
+    }
+    return -1;
+  };
+
+  let i = 0;
+  let j = 0;
+  let matched = 0;
+  while (i < input.length && j < output.length) {
+    const source = comparableWord(input[i]);
+    const restored = comparableWord(output[j]);
+    if (source === restored) {
+      result[i] = output[j];
+      i += 1;
+      j += 1;
+      matched += 1;
+      continue;
+    }
+    const added = find(output, j, source);
+    const dropped = find(input, i, restored);
+    if (added !== -1 && (dropped === -1 || added - j <= dropped - i)) j = added;
+    else if (dropped !== -1) i = dropped;
+    else {
+      i += 1;
+      j += 1;
+    }
+  }
+  if (!input.length || matched < input.length * 0.95) return null;
+
+  let next = 0;
+  return words.map((captionWords) =>
+    captionWords.map(() => result[next++]).join(" "),
+  );
+}
+
+/**
+ * Rows for a transcript whose punctuation is restored chunk by chunk.
+ * `punctuation` maps a chunk index to its restored caption texts, or to null
+ * when restoring failed (those rows stay sliced but no longer wait).
+ */
+function groupWithPunctuation(transcript, punctuation = {}) {
+  const captions = Array.isArray(transcript) ? transcript : [];
+  if (!needsPunctuation(captions)) return groupTranscriptEntries(captions);
+
+  const chunks = new Map();
+  captions.forEach((caption) => {
+    const chunk = punctuationChunkOf(caption.start);
+    if (!chunks.has(chunk)) chunks.set(chunk, []);
+    chunks.get(chunk).push(caption);
+  });
+
+  const segments = [];
+  let restoredRun = [];
+  const flushRestored = () => {
+    segments.push(...groupTranscriptEntries(restoredRun));
+    restoredRun = [];
+  };
+  [...chunks.keys()]
+    .sort((a, b) => a - b)
+    .forEach((chunk) => {
+      const chunkCaptions = chunks.get(chunk);
+      const restored = punctuation[chunk];
+      if (Array.isArray(restored) && restored.length === chunkCaptions.length) {
+        // Consecutive restored chunks group together so a sentence crossing
+        // the five-minute boundary stays whole.
+        restoredRun.push(
+          ...chunkCaptions.map((caption, index) => ({ ...caption, text: restored[index] })),
+        );
+        return;
+      }
+      flushRestored();
+      const pending = restored === undefined;
+      groupTranscriptEntries(chunkCaptions, PENDING_PUNCTUATION_LIMITS).forEach(
+        (segment) => segments.push(pending ? { ...segment, pending: true } : segment),
+      );
+    });
+  flushRestored();
+  return segments;
 }
 
 // ============================================================
@@ -616,6 +771,8 @@ async function startDigest(videoId, videoUrl) {
     currentTranscriptTimestamped = texts.timestamped;
     currentTranscriptLanguage = cached.transcriptLanguage || null;
     currentTranscriptMode = normalizeTranscriptMode(cached.transcriptMode);
+    currentPunctuation = { ...(cached.punctuation || {}) };
+    punctuationRetryable = new Set();
     isAnalysisLoading = false;
 
     // Restore semantic-segment translations from persistent storage.
@@ -700,6 +857,8 @@ async function startDigest(videoId, videoUrl) {
   currentTranscriptText = transcriptResult.transcriptText;
   currentTranscriptTimestamped = transcriptResult.transcriptTextTimestamped;
   currentTranscriptLanguage = transcriptResult.language || null;
+  currentPunctuation = {};
+  punctuationRetryable = new Set();
 
   // Render transcript immediately (no LLM needed)
   renderTranscript();
@@ -911,7 +1070,7 @@ function renderTranscript() {
   transcriptList.parentElement.insertBefore(badge, transcriptList);
 
   // Group entries using smart sentence-boundary + time-guardrail logic
-  const grouped = groupTranscriptEntries(currentTranscript);
+  const grouped = getActiveTranscriptSegments();
 
   grouped.forEach((group) => {
     const div = document.createElement("div");
@@ -924,7 +1083,9 @@ function renderTranscript() {
 
     div.innerHTML = `
       <span class="transcript-time">${timestamp}</span>
-      <span class="transcript-text">${renderSubtitleInlineMarkup(group.text)}</span>
+      ${group.pending
+        ? renderTranscriptSegmentContent(group, "original", "", "")
+        : `<span class="transcript-text">${renderSubtitleInlineMarkup(group.text)}</span>`}
     `;
 
     div.addEventListener("click", (event) =>
@@ -1808,6 +1969,19 @@ function planCacheEviction(entries, maxBytes) {
 }
 
 /**
+ * Translations of the video's current rows. Keys left over from an older
+ * grouping can never match a row again, so they are not carried forward.
+ */
+function translationsToPersist(cache, videoId, segments) {
+  const kept = {};
+  segments.forEach((segment) => {
+    const key = transcriptTranslationCacheKey(segment, videoId);
+    if (cache.has(key)) kept[key] = cache.get(key);
+  });
+  return kept;
+}
+
+/**
  * Saves the current digest results to persistent local storage.
  * Results survive browser restarts — reopening the same video loads from cache
  * without consuming API tokens or Supadata calls.
@@ -1816,13 +1990,11 @@ async function saveToCache(videoId) {
   if (!videoId || !currentTranscript) return;
 
   try {
-    // Persist semantic-segment translations for this video.
-    const paragraphCacheForVideo = {};
-    for (const [key, value] of transcriptParagraphCache.entries()) {
-      if (key.startsWith(`${videoId}:`)) {
-        paragraphCacheForVideo[key] = value;
-      }
-    }
+    const paragraphCacheForVideo = translationsToPersist(
+      transcriptParagraphCache,
+      videoId,
+      getActiveTranscriptSegments(),
+    );
 
     const cacheData = {
       analysis: currentAnalysis, // May be null if not yet analyzed
@@ -1832,6 +2004,11 @@ async function saveToCache(videoId) {
       videoTitle: currentVideoTitle,
       channelName: currentChannelName,
       paragraphCache: paragraphCacheForVideo,
+      punctuation: Object.fromEntries(
+        Object.entries(currentPunctuation).filter(
+          ([chunk]) => !punctuationRetryable.has(Number(chunk)),
+        ),
+      ),
       timestamp: Date.now(), // Last opened or updated; drives eviction
     };
 
@@ -2151,6 +2328,12 @@ function highlightActiveEntry(currentSeconds) {
   const transcriptList = document.getElementById("transcriptList");
   if (!transcriptList) return;
 
+  // Punctuate the chunk being played, and the next one during its last minute.
+  requestPunctuation(currentSeconds, { urgent: true });
+  if (currentSeconds % PUNCTUATION_CHUNK_SECONDS > PUNCTUATION_CHUNK_SECONDS - 60) {
+    requestPunctuation(currentSeconds + 60);
+  }
+
   const entries = transcriptList.querySelectorAll(".transcript-entry");
   if (entries.length === 0) return;
 
@@ -2244,7 +2427,62 @@ function getOriginalTranscriptLabel() {
 }
 
 function getActiveTranscriptSegments() {
-  return groupTranscriptEntries(currentTranscript || []);
+  return groupWithPunctuation(currentTranscript || [], currentPunctuation);
+}
+
+/**
+ * Asks DeepSeek to punctuate the chunk containing `seconds`, if this video
+ * needs it. Chunks are restored one at a time, playback first.
+ */
+function requestPunctuation(seconds, { urgent = false } = {}) {
+  if (!needsPunctuationMemo(currentTranscript)) return;
+  if (!punctuationQueue || punctuationQueue.videoId !== currentVideoId) {
+    punctuationQueue?.stop();
+    const videoId = currentVideoId;
+    punctuationQueue = createTranslationQueue({
+      batchSize: 1,
+      isDone: (chunk) => chunk in currentPunctuation,
+      requestBatch: ([chunk]) => punctuateChunk(chunk, videoId),
+    });
+    punctuationQueue.videoId = videoId;
+  }
+  punctuationQueue.enqueue(punctuationChunkOf(seconds), { urgent });
+}
+
+let needsPunctuationFor = null;
+let needsPunctuationResult = false;
+function needsPunctuationMemo(transcript) {
+  if (transcript !== needsPunctuationFor) {
+    needsPunctuationFor = transcript;
+    needsPunctuationResult = needsPunctuation(transcript);
+  }
+  return needsPunctuationResult;
+}
+
+async function punctuateChunk(chunk, videoId) {
+  const captions = (currentTranscript || []).filter(
+    (caption) => punctuationChunkOf(caption.start) === chunk,
+  );
+  if (!captions.length || videoId !== currentVideoId) return;
+  const texts = captions.map((caption) => caption.text);
+  const result = await chrome.runtime
+    .sendMessage({
+      action: "punctuateCaptions",
+      text: texts.join(" "),
+      videoTitle: currentVideoTitle,
+    })
+    .catch((error) => ({ success: false, error: error.message }));
+  if (videoId !== currentVideoId) return;
+
+  if (result?.success) {
+    // null here means DeepSeek reworded the captions: keep the slices for good.
+    currentPunctuation[chunk] = applyPunctuation(texts, result.text);
+  } else {
+    currentPunctuation[chunk] = null;
+    punctuationRetryable.add(chunk);
+  }
+  refreshTranscriptKeepingPosition();
+  await updateCache();
 }
 
 function buildVideoSubtitlePayload(segments, mode, getTranslation) {
@@ -2363,8 +2601,18 @@ function scrollToTranscriptSeconds(seconds) {
   target.scrollIntoView({ block: "start" });
 }
 
+const PENDING_PUNCTUATION_HINT =
+  '<span class="transcript-pending-hint">正在断句…</span>';
+
 function renderTranscriptSegmentContent(segment, mode, translated, error) {
   const original = renderSubtitleInlineMarkup(segment.text);
+  if (segment.pending) {
+    if (mode === "bilingual") {
+      return `<span class="transcript-copy"><span class="transcript-original">${original}</span>${PENDING_PUNCTUATION_HINT}</span>`;
+    }
+    // Original, and Chinese with no translation yet: the source with the hint.
+    return `<span class="transcript-copy"><span class="transcript-text">${original}</span>${PENDING_PUNCTUATION_HINT}</span>`;
+  }
   if (mode === "original") {
     // Translations may still run for video subtitles; the sidebar ignores them.
     return `<span class="transcript-copy"><span class="transcript-text">${original}</span></span>`;
@@ -2412,7 +2660,7 @@ function renderTranscriptModeRows(segments, mode) {
       transcriptTranslationCacheKey(segment),
     );
     div.className =
-      mode === "original"
+      mode === "original" || segment.pending
         ? "transcript-entry"
         : `transcript-entry ${cached ? "translated" : "translating"}`;
     div.dataset.seconds = segment.start;
@@ -2662,9 +2910,12 @@ async function translateTranscript() {
   syncVideoSubtitleOverlay();
   activeTranslationQueue?.stop();
   const queue = createTranslationQueue({
-    batchSize: 3,
+    // Rows are single sentences, so six keep each request about as large as
+    // the three multi-sentence rows it replaced.
+    batchSize: 6,
     isDone: (index) => {
-      if (!segments[index]) return true;
+      // Pending rows will be regrouped once punctuated; translate them then.
+      if (!segments[index] || segments[index].pending) return true;
       const key = transcriptTranslationCacheKey(segments[index]);
       return (
         transcriptParagraphCache.has(key) ||
@@ -2689,6 +2940,9 @@ async function translateTranscript() {
         )
         .forEach((entry) => {
           const index = Number(entry.target.dataset.segmentIndex);
+          if (entry.isIntersecting && segments[index]?.pending) {
+            requestPunctuation(segments[index].start);
+          }
           if (entry.isIntersecting) queue.enqueue(index);
           else queue.drop(index);
         });
@@ -2726,6 +2980,10 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   alignTranslatedSegmentBatch,
   createTranslationQueue,
   planCacheEviction,
+  translationsToPersist,
+  applyPunctuation,
+  needsPunctuation,
+  groupWithPunctuation,
   transcriptTextsFrom,
   renderSubtitleInlineMarkup,
   renderTranscriptSegmentContent,
